@@ -1,0 +1,170 @@
+/* Phase 10: Visual Process Editor — eigene CSS-Schicht ueber Drawflow */
+
+.pe-editor-shell {
+	display: flex;
+	width: 100%;
+	min-height: 600px;
+	border: 1px solid #d1d8dd;
+	border-radius: 6px;
+	background: #fafbfc;
+	position: relative;
+}
+
+.pe-editor-shell.pe-readonly::before {
+	content: "Aktive Version — schreibgeschuetzt. Aenderungen erfordern eine neue Version.";
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	padding: 6px 12px;
+	font-size: 0.85em;
+	background: #fff3cd;
+	color: #856404;
+	z-index: 10;
+	border-bottom: 1px solid #ffeeba;
+}
+
+.pe-canvas {
+	flex: 1 1 auto;
+	min-height: 600px;
+	position: relative;
+	overflow: hidden;
+}
+
+.pe-inspector {
+	flex: 0 0 320px;
+	max-width: 320px;
+	border-left: 1px solid #d1d8dd;
+	background: #fff;
+	padding: 12px;
+	overflow-y: auto;
+	display: none;
+}
+.pe-inspector.pe-open {
+	display: block;
+}
+
+.pe-inspector-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 12px;
+	border-bottom: 1px solid #e9ecef;
+	padding-bottom: 8px;
+}
+.pe-inspector-close {
+	cursor: pointer;
+	font-size: 1.2em;
+	color: #6c757d;
+	background: none;
+	border: none;
+}
+.pe-inspector-close:hover {
+	color: #000;
+}
+
+.pe-inspector-section {
+	margin-bottom: 16px;
+}
+.pe-inspector-section h6 {
+	margin: 0 0 6px 0;
+	font-size: 0.85em;
+	color: #6c757d;
+	text-transform: uppercase;
+}
+.pe-inspector-section .pe-kv {
+	font-size: 0.9em;
+	padding: 2px 0;
+}
+.pe-inspector-section .pe-kv b {
+	color: #495057;
+}
+
+/* Knoten-Styling im Drawflow */
+.drawflow .drawflow-node.pe-node {
+	background: #fff;
+	border: 1px solid #d1d8dd;
+	border-radius: 6px;
+	padding: 0;
+	width: 220px;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.drawflow .drawflow-node.pe-node.selected {
+	border-color: #1976d2;
+	box-shadow: 0 1px 4px rgba(25, 118, 210, 0.3);
+}
+
+.pe-node-body {
+	padding: 8px 10px;
+}
+.pe-node-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+}
+.pe-node-header strong {
+	font-size: 0.92em;
+	color: #212529;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 140px;
+}
+.pe-node-header .pe-badge {
+	font-size: 0.7em;
+	background: #e9ecef;
+	color: #495057;
+	padding: 1px 6px;
+	border-radius: 3px;
+	white-space: nowrap;
+}
+.pe-node-step-key {
+	font-size: 0.75em;
+	color: #6c757d;
+	font-family: monospace;
+}
+.pe-port-label {
+	font-size: 0.7em;
+	color: #6c757d;
+	font-family: monospace;
+	pointer-events: none;
+}
+
+/* Process-Inputs-Knoten */
+.drawflow .drawflow-node.pe-process-inputs {
+	background: #f0f7ff;
+	border: 1px dashed #1976d2;
+	border-radius: 6px;
+	width: 200px;
+}
+.pe-process-inputs .pe-node-header strong {
+	color: #1976d2;
+}
+
+/* Drawflow-Toolbar-Anpassungen */
+.pe-toolbar {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	z-index: 5;
+	background: rgba(255, 255, 255, 0.9);
+	border: 1px solid #d1d8dd;
+	border-radius: 4px;
+	padding: 4px;
+	display: flex;
+	gap: 4px;
+}
+.pe-toolbar button {
+	background: none;
+	border: 1px solid transparent;
+	padding: 2px 6px;
+	cursor: pointer;
+	font-size: 0.85em;
+	border-radius: 3px;
+}
+.pe-toolbar button:hover {
+	background: #f1f3f5;
+	border-color: #d1d8dd;
+}

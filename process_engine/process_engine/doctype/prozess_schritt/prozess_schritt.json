@@ -22,7 +22,9 @@
   "config_json",
   "konfig_json",
   "standard_verantwortlich_rolle",
-  "default_faelligkeit_tage"
+  "default_faelligkeit_tage",
+  "editor_x",
+  "editor_y"
  ],
  "fields": [
   {
@@ -140,6 +142,20 @@
    "fieldname": "default_faelligkeit_tage",
    "fieldtype": "Int",
    "label": "Default Faelligkeit Tage"
+  },
+  {
+   "description": "Phase 10: X-Position im visuellen Editor. Wird vom Editor automatisch gesetzt. NICHT Teil des Active-Lock-Fingerprints.",
+   "fieldname": "editor_x",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Editor X"
+  },
+  {
+   "description": "Phase 10: Y-Position im visuellen Editor. Analog editor_x.",
+   "fieldname": "editor_y",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Editor Y"
   }
  ],
  "grid_page_length": 50,

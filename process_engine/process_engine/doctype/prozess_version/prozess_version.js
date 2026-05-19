@@ -45,6 +45,7 @@ frappe.ui.form.on("Prozess Version", {
 		frm.add_custom_button(__("Version duplizieren"), () => _open_duplicate_dialog(frm));
 
 		_render_dag_preview(frm);
+		_render_visual_editor(frm);
 	},
 
 	before_save(frm) {
@@ -272,5 +273,135 @@ function _render_dag_preview(frm) {
 		const container = field.$wrapper.find(".dag-graph-container").get(0);
 		if (!container) return;
 		window.process_engine.dag.renderDag({ container, nodes, edges });
+	});
+}
+
+
+// ==================== Phase 10: Visual Editor ====================
+
+async function _render_visual_editor(frm) {
+	const field = frm.get_field("editor_html");
+	if (!field) return;
+	const $wrapper = field.$wrapper;
+	const shell_class = frm.doc.is_active ? "pe-editor-shell pe-readonly" : "pe-editor-shell";
+	$wrapper.html(`
+		<div class="${shell_class}" style="margin-top: ${frm.doc.is_active ? "32px" : "0"};">
+			<div class="pe-canvas"></div>
+			<div class="pe-inspector"></div>
+		</div>
+	`);
+	const canvas = $wrapper.find(".pe-canvas").get(0);
+	const inspector_el = $wrapper.find(".pe-inspector").get(0);
+	if (!canvas || !inspector_el) return;
+	await new Promise((r) => frappe.require("/assets/process_engine/js/process_editor.js", r));
+	await window.process_engine.editor.render({
+		container: canvas,
+		schritte: frm.doc.schritte || [],
+		schritt_io: frm.doc.schritt_io || [],
+		payload_field_specs: frm.doc.payload_field_specs || [],
+		read_only: !!frm.doc.is_active,
+		on_save_position(step_key, x, y) {
+			const row = (frm.doc.schritte || []).find((r) => (r.step_key || "").trim() === step_key);
+			if (!row) return;
+			frappe.model.set_value(row.doctype, row.name, "editor_x", x);
+			frappe.model.set_value(row.doctype, row.name, "editor_y", y);
+		},
+		on_create_edge(src, dst) {
+			// Aktuell nur step_done → step_input wird zur Save-Logik durchgereicht.
+			if (dst.kind === "step_input" && dst.target) {
+				const existing = (frm.doc.schritt_io || []).find(
+					(r) =>
+						(r.step_key || "").trim() === dst.step_key &&
+						(r.kind || "").trim() === "step_input" &&
+						(r.target || "").trim() === dst.target
+				);
+				if (existing) return;
+				const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+				new_row.step_key = dst.step_key;
+				new_row.kind = "step_input";
+				new_row.target = dst.target;
+				frm.refresh_field("schritt_io");
+				frm.dirty();
+			}
+		},
+		on_delete_edge(src, dst) {
+			if (dst.kind === "step_input" && dst.target) {
+				const remaining = (frm.doc.schritt_io || []).filter(
+					(r) =>
+						!(
+							(r.step_key || "").trim() === dst.step_key &&
+							(r.kind || "").trim() === "step_input" &&
+							(r.target || "").trim() === dst.target
+						)
+				);
+				frm.clear_table("schritt_io");
+				for (const r of remaining) {
+					const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+					new_row.step_key = r.step_key;
+					new_row.kind = r.kind;
+					new_row.target = r.target;
+				}
+				frm.refresh_field("schritt_io");
+				frm.dirty();
+			}
+		},
+		on_select_node(step_key) {
+			_open_inspector(frm, inspector_el, step_key);
+		},
+	});
+}
+
+function _open_inspector(frm, inspector_el, step_key) {
+	const $inspector = $(inspector_el);
+	const row = (frm.doc.schritte || []).find((r) => (r.step_key || "").trim() === step_key);
+	if (!row) {
+		$inspector.removeClass("pe-open").empty();
+		return;
+	}
+	const io_rows = (frm.doc.schritt_io || []).filter((r) => (r.step_key || "").trim() === step_key);
+	const read_only = !!frm.doc.is_active;
+	const io_list = io_rows
+		.map(
+			(r) =>
+				`<div class="pe-kv"><b>${frappe.utils.escape_html(r.kind)}</b> → <code>${frappe.utils.escape_html(r.target || "")}</code></div>`
+		)
+		.join("");
+	$inspector.html(`
+		<div class="pe-inspector-header">
+			<strong>${frappe.utils.escape_html(row.titel || row.step_key)}</strong>
+			<button class="pe-inspector-close" title="${__("Schliessen")}">&times;</button>
+		</div>
+		<div class="pe-inspector-section">
+			<h6>${__("Schritt")}</h6>
+			<div class="pe-kv"><b>step_key:</b> <code>${frappe.utils.escape_html(row.step_key || "")}</code></div>
+			<div class="pe-kv"><b>task_type:</b> ${frappe.utils.escape_html(row.task_type || "")}</div>
+			<div class="pe-kv"><b>pflicht:</b> ${row.pflicht ? "ja" : "nein"}</div>
+			<div class="pe-kv"><b>sichtbar:</b> ${frappe.utils.escape_html(row.sichtbar_fuer_prozess_typ || "")}</div>
+			${row.handler_key ? `<div class="pe-kv"><b>handler_key:</b> <code>${frappe.utils.escape_html(row.handler_key)}</code></div>` : ""}
+			${row.print_format ? `<div class="pe-kv"><b>print_format:</b> ${frappe.utils.escape_html(row.print_format)}</div>` : ""}
+		</div>
+		<div class="pe-inspector-section">
+			<h6>${__("I/O")} (${io_rows.length})</h6>
+			${io_list || `<div class="text-muted">${__("Keine I/O")}</div>`}
+		</div>
+		${
+			read_only
+				? `<div class="text-warning"><small>${__("Aktive Version — Edit nur via duplizieren.")}</small></div>`
+				: `<div class="pe-inspector-section"><button class="btn btn-xs btn-default" data-action="open-grid">${__("Im Grid bearbeiten")}</button></div>`
+		}
+	`);
+	$inspector.addClass("pe-open");
+	$inspector.find(".pe-inspector-close").off("click").on("click", () => {
+		$inspector.removeClass("pe-open").empty();
+	});
+	$inspector.find('[data-action="open-grid"]').off("click").on("click", () => {
+		// Scrollen zum Schritte-Grid und Row oeffnen
+		frm.scroll_to_field("schritte");
+		const grid = frm.get_field("schritte").grid;
+		if (grid && row.name) {
+			try {
+				grid.toggle_view(row.name, true);
+			} catch (e) {}
+		}
 	});
 }

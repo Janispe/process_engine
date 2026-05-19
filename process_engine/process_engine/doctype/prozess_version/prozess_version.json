@@ -20,6 +20,8 @@
   "section_schritt_io",
   "schritt_io",
   "schritt_kanten",
+  "section_editor",
+  "editor_html",
   "dag_preview_html",
   "amended_from"
  ],
@@ -118,9 +120,20 @@
    "hidden": 1
   },
   {
+   "fieldname": "section_editor",
+   "fieldtype": "Section Break",
+   "label": "Visueller Editor"
+  },
+  {
+   "description": "Phase 10: interaktiver Node-Editor (Drawflow). Drag Knoten zum Verschieben, Drag von Output- zu Input-Port erzeugt eine Verbindung. Klick auf Knoten oeffnet den Inspector. Bei aktiven Versionen schreibgeschuetzt (nur Position-Updates erlaubt).",
+   "fieldname": "editor_html",
+   "fieldtype": "HTML",
+   "label": "Visueller Editor"
+  },
+  {
    "fieldname": "dag_preview_html",
    "fieldtype": "HTML",
-   "label": "DAG-Uebersicht"
+   "label": "DAG-Uebersicht (read-only Mermaid)"
   },
   {
    "fieldname": "amended_from",
