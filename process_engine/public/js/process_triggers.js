@@ -1,10 +1,10 @@
 /**
  * Generischer Helper, der "Prozess starten"-Buttons aus der ProcessRuntimeConfig
- * der hausverwaltung-App auf Quell-Doctype-Forms haengt.
+ * der process_engine-App auf Quell-Doctype-Forms haengt.
  *
  * Verwendung im jeweiligen Quell-Doctype-JS:
  *   frappe.ui.form.on("Mietvertrag", {
- *     refresh(frm) { hausverwaltung.process_triggers.attach_to_form(frm); }
+ *     refresh(frm) { process_engine.process_triggers.attach_to_form(frm); }
  *   });
  *
  * Der Server-Endpoint get_triggers_for_source liefert pro Quell-Doctype die
@@ -12,6 +12,9 @@
  * fuer den konkreten Source-Doc.
  */
 (function () {
+	window.process_engine = window.process_engine || {};
+	// Backward-Compat-Alias: bestehender hausverwaltung-Code kann weiter ueber
+	// window.hausverwaltung.process_triggers darauf zugreifen.
 	window.hausverwaltung = window.hausverwaltung || {};
 
 	// Cache-Key = (doctype, name) — pro Form-Instanz einmal laden. Bei Navigation
@@ -36,7 +39,7 @@
 		try {
 			triggers = await _fetch_triggers(frm.doctype, frm.doc.name);
 		} catch (err) {
-			console.error("hausverwaltung.process_triggers: fetch failed", err);
+			console.error("process_engine.process_triggers: fetch failed", err);
 			return;
 		}
 		for (const t of triggers) {
@@ -50,7 +53,7 @@
 						});
 						frappe.new_doc(t.target_doctype, payload || {});
 					} catch (err) {
-						console.error("hausverwaltung.process_triggers: build_payload failed", err);
+						console.error("process_engine.process_triggers: build_payload failed", err);
 						frappe.show_alert(
 							{ message: __("Prozess konnte nicht gestartet werden."), indicator: "red" },
 							5
@@ -62,25 +65,25 @@
 		}
 	}
 
-	window.hausverwaltung.process_triggers = { attach_to_form };
+	const api = { attach_to_form };
+	window.process_engine.process_triggers = api;
+	// Legacy alias — wird genutzt von Code aus der hausverwaltung-App-Zeit
+	window.hausverwaltung.process_triggers = api;
 
 	// Self-Registration: haengt fuer jeden Source-Doctype aus frappe.boot ein
 	// refresh-Hook ein, der attach_to_form aufruft. Damit muss kein Source-
 	// Doctype-JS mehr explizit attach_to_form() rufen.
 	//
 	// Race-Safety: zweifacher Aufruf — sofort UND nach after_ajax — mit Set-Dedup.
-	// Sofort ist wichtig wenn der User direkt auf einem Form landet und unser
-	// JS-Modul gerade noch vor dem Form-Render lief; after_ajax greift, falls
-	// frappe.boot beim ersten Aufruf noch leer war.
 	const _registered_doctypes = new Set();
 
 	function _register_process_trigger_forms() {
-		const source_doctypes = (frappe.boot || {}).hausverwaltung_process_source_doctypes || [];
+		const source_doctypes = (frappe.boot || {}).process_engine_source_doctypes || [];
 		for (const dt of source_doctypes) {
 			if (!dt || _registered_doctypes.has(dt)) continue;
 			_registered_doctypes.add(dt);
 			frappe.ui.form.on(dt, "refresh", (frm) => {
-				window.hausverwaltung?.process_triggers?.attach_to_form(frm);
+				window.process_engine?.process_triggers?.attach_to_form(frm);
 			});
 		}
 	}

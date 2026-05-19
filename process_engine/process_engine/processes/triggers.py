@@ -148,13 +148,13 @@ def add_to_boot(bootinfo) -> None:
 				if (trigger.source_doctype or "").strip()
 			}
 		)
-		bootinfo["hausverwaltung_process_source_doctypes"] = source_doctypes
+		bootinfo["process_engine_source_doctypes"] = source_doctypes
 	except Exception:
 		frappe.log_error(
 			title="hausverwaltung process triggers boot failed",
 			message=frappe.get_traceback(),
 		)
-		bootinfo["hausverwaltung_process_source_doctypes"] = []
+		bootinfo["process_engine_source_doctypes"] = []
 
 
 @frappe.whitelist()

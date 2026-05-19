@@ -10,7 +10,34 @@ from frappe.model.document import Document
 from frappe.utils import now_datetime
 from frappe.utils.file_manager import save_file
 
-from hausverwaltung.hausverwaltung.integrations.paperless import export_attachment_to_paperless
+# Phase 8 Review-Fixes 3: paperless_export ist hookbasiert — Consumer-Apps
+# (z.B. hausverwaltung) registrieren ihre Paperless-Export-Funktion via
+# `process_engine_paperless_export_handler`. process_engine selbst hat
+# keinen harten paperless-Import mehr.
+
+
+def _get_paperless_export_handler():
+	"""Liefert die erste registrierte Paperless-Export-Callable.
+
+	Erwartete Signatur:
+		handler(*, doctype, docname, file_url, title, tag_names) -> dict
+		Return-dict muss "link" enthalten (das Paperless-Doc).
+
+	Wenn kein Hook registriert ist, wirft sie eine klare Fehlermeldung statt
+	stillschweigend nichts zu tun.
+	"""
+	for path in frappe.get_hooks("process_engine_paperless_export_handler") or []:
+		p = (path or "").strip()
+		if not p:
+			continue
+		try:
+			return frappe.get_attr(p)
+		except Exception:
+			frappe.log_error(
+				title=f"process_engine: paperless export handler lookup failed ({p})",
+				message=frappe.get_traceback(),
+			)
+	return None
 
 TASK_TYPE_MANUAL_CHECK = "manual_check"
 TASK_TYPE_FILE_UPLOAD = "file_upload"
@@ -167,7 +194,16 @@ class PaperlessExportTaskHandler(BaseTaskHandler):
 		config = extract_task_config(task_row)
 		variant = (config.get("dokument_typ_tag") or task_row.aufgabe or "Dokument").strip()
 		tag_builder = context.tag_builder or _default_tag_builder
-		res = export_attachment_to_paperless(
+		handler = _get_paperless_export_handler()
+		if handler is None:
+			frappe.throw(
+				_(
+					"Paperless-Export ist nicht konfiguriert. Eine Consumer-App "
+					"muss via Hook `process_engine_paperless_export_handler` eine "
+					"Export-Funktion registrieren."
+				)
+			)
+		res = handler(
 			doctype=doc.doctype,
 			docname=doc.name,
 			file_url=file_url,

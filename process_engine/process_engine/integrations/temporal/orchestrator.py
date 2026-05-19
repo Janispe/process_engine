@@ -14,12 +14,10 @@ from process_engine.process_engine.integrations.temporal.config import (
 )
 from process_engine.process_engine.integrations.temporal.models import (
 	ActionSignal,
-	EmailWorkflowStartInput,
 	ProcessWorkflowStartInput,
 	WorkflowSnapshot,
 	now_iso,
 )
-from hausverwaltung.hausverwaltung.integrations.temporal.workflows.email_workflow import EmailWorkflow
 from process_engine.process_engine.integrations.temporal.workflows.process_workflow import ProcessWorkflow
 
 try:
@@ -38,8 +36,40 @@ def _run(coro):
 
 
 
+def _get_workflow_dispatchers() -> dict:
+	"""Aggregiert hook-basierte Domain-Workflow-Dispatcher.
+
+	Consumer-Apps registrieren via `process_engine_workflow_dispatchers`:
+		# in app/hooks.py
+		process_engine_workflow_dispatchers = [
+			"app.path.to.factory",
+		]
+
+	Jede Factory-Callable gibt ein dict {doctype: dispatcher_cfg} zurueck.
+	Dispatcher-Cfg-Keys: workflow_id_prefix, workflow_class,
+	task_queue, start_input_factory(doc, actor).
+
+	Wenn fuer einen Doctype kein Dispatcher registriert ist, faellt der
+	Orchestrator auf ProcessWorkflow + ProcessWorkflowStartInput zurueck.
+	"""
+	dispatchers: dict = {}
+	for path in frappe.get_hooks("process_engine_workflow_dispatchers") or []:
+		p = (path or "").strip()
+		if not p:
+			continue
+		try:
+			dispatchers.update(frappe.get_attr(p)() or {})
+		except Exception:
+			frappe.log_error(
+				title=f"process_engine: workflow dispatcher factory failed ({p})",
+				message=frappe.get_traceback(),
+			)
+	return dispatchers
+
+
 def _workflow_id_for_doc(doctype: str, docname: str) -> str:
-	prefix = "email" if doctype == "Email Entwurf" else "process"
+	cfg = _get_workflow_dispatchers().get(doctype)
+	prefix = (cfg or {}).get("workflow_id_prefix") or "process"
 	return f"hv-{prefix}::{doctype}::{docname}"
 
 
@@ -64,14 +94,9 @@ def _set_temporal_fields(
 
 
 def _start_input_for_doc(doc, actor: str):
-	if doc.doctype == "Email Entwurf":
-		return EmailWorkflowStartInput(
-			doctype=doc.doctype,
-			docname=doc.name,
-			initial_status=(doc.status or "Draft").strip() or "Draft",
-			initial_docstatus=int(doc.docstatus or 0),
-			actor=actor,
-		)
+	cfg = _get_workflow_dispatchers().get(doc.doctype)
+	if cfg and callable(cfg.get("start_input_factory")):
+		return cfg["start_input_factory"](doc, actor)
 	return ProcessWorkflowStartInput(
 		doctype=doc.doctype,
 		docname=doc.name,
@@ -83,16 +108,17 @@ def _start_input_for_doc(doc, actor: str):
 
 
 def _task_queue_for_doc(doctype: str) -> str:
-	settings = get_temporal_settings()
-	if doctype == "Email Entwurf":
-		return settings.task_queue_email
-	return settings.task_queue_process
+	cfg = _get_workflow_dispatchers().get(doctype)
+	if cfg and cfg.get("task_queue"):
+		return cfg["task_queue"]
+	return get_temporal_settings().task_queue_process
 
 
 
 def _workflow_run_callable(doctype: str):
-	if doctype == "Email Entwurf":
-		return EmailWorkflow.run
+	cfg = _get_workflow_dispatchers().get(doctype)
+	if cfg and cfg.get("workflow_class"):
+		return cfg["workflow_class"].run
 	return ProcessWorkflow.run
 
 
