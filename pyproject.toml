@@ -1,0 +1,25 @@
+[project]
+name = "process_engine"
+authors = [
+    { name = "janis", email = "janispe10@gmail.com"}
+]
+description = "Generic process workflow engine for Frappe (DocTypes, DAG, task handlers, Temporal backend)"
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.flit.module]
+name = "process_engine"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "tab"

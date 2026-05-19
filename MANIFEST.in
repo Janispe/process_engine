@@ -1,0 +1,2 @@
+include README.md
+recursive-include process_engine *.json *.js *.css *.html *.py *.txt
