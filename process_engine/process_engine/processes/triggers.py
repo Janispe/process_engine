@@ -151,7 +151,7 @@ def add_to_boot(bootinfo) -> None:
 		bootinfo["process_engine_source_doctypes"] = source_doctypes
 	except Exception:
 		frappe.log_error(
-			title="hausverwaltung process triggers boot failed",
+			title="process_engine triggers boot failed",
 			message=frappe.get_traceback(),
 		)
 		bootinfo["process_engine_source_doctypes"] = []

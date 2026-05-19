@@ -1,8 +1,8 @@
-// hausverwaltung.dag — DAG-Visualisierung via Mermaid
+// process_engine.dag — DAG-Visualisierung via Mermaid
 //
 // Mermaid: gepinnt auf v10.9.3, MIT License
 // Source: https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js
-// Bundle: hausverwaltung/public/js/lib/mermaid.min.js (~3.2 MB, ~530 KB gzipped)
+// Bundle: process_engine/public/js/lib/mermaid.min.js (~3.2 MB, ~530 KB gzipped)
 //
 // Sicherheits-Annahmen:
 //  - securityLevel: "strict" (Labels koennen UI-pflegbar sein → XSS-Schutz)
@@ -10,8 +10,11 @@
 //  - Click-Handler werden ueber eine safeId→step_key-Map gebunden, nicht via Regex auf DOM-IDs
 
 (function () {
+	window.process_engine = window.process_engine || {};
+	// Backward-Compat-Alias fuer Code, der noch window.hausverwaltung.dag nutzt.
 	window.hausverwaltung = window.hausverwaltung || {};
-	const ns = (window.hausverwaltung.dag = window.hausverwaltung.dag || {});
+	const ns = (window.process_engine.dag = window.process_engine.dag || {});
+	window.hausverwaltung.dag = ns;
 	let _loaded = false;
 
 	async function _ensureMermaid() {
@@ -93,7 +96,7 @@
 			$(container).html(
 				`<p class="text-danger">${__("Graph konnte nicht gerendert werden.")}</p>`
 			);
-			console.error("hausverwaltung.dag.renderDag failed", err);
+			console.error("process_engine.dag.renderDag failed", err);
 			return;
 		}
 

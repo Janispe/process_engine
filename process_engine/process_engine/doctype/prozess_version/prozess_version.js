@@ -270,6 +270,6 @@ function _render_dag_preview(frm) {
 	frappe.require("/assets/process_engine/js/dag_mermaid.js", () => {
 		const container = field.$wrapper.find(".dag-graph-container").get(0);
 		if (!container) return;
-		window.hausverwaltung.dag.renderDag({ container, nodes, edges });
+		window.process_engine.dag.renderDag({ container, nodes, edges });
 	});
 }

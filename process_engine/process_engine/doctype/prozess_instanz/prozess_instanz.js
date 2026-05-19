@@ -372,7 +372,7 @@ function _render_progress_graph(frm) {
 	frappe.require("/assets/process_engine/js/dag_mermaid.js", () => {
 		const container = field.$wrapper.find(".progress-graph-container").get(0);
 		if (!container) return;
-		window.hausverwaltung.dag.renderDag({
+		window.process_engine.dag.renderDag({
 			container,
 			nodes,
 			edges,
