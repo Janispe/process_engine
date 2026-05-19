@@ -196,10 +196,11 @@ function _validate_dag_locally(frm) {
 			}
 		}
 		if (kind === "payload_input" && target) {
+			// payload_input ohne Producer ist erlaubt — es ist ein Process Input
+			// (extern via payload_field_specs bereitgestellt). Phase 9 erlaubt das
+			// bewusst; serverseitig prueft validate_schritt_io das Detail.
 			const producer = producer_by_field[target];
-			if (!producer) {
-				errors.push(__("payload_input ohne Producer: {0} erwartet '{1}'.", [sk, target]));
-			} else if (producer === sk) {
+			if (producer && producer === sk) {
 				errors.push(__("Schritt {0} liest seinen eigenen payload_output '{1}'.", [sk, target]));
 			}
 		}

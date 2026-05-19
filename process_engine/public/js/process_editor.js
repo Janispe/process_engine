@@ -120,32 +120,37 @@
 		return result;
 	}
 
-	function _build_port_meta(step_key, schritt_io) {
-		// Sortiert payload-Ports alphabetisch fuer deterministisches Re-Rendering.
+	function _build_port_meta(step_key, schritt_io, all_input_fields) {
+		// Phase 10-Fix: ALLE payload_field_specs werden als input-Ports gerendert
+		// (Reihenfolge: alphabetisch). Aktive Ports = mit payload_input-Zeile in schritt_io,
+		// leere Ports = "open" (User kann drauf droppen, um neue payload_input-Zeile zu erzeugen).
+		// outputs bleiben "nur aktive Felder + generic step_done" — neuer payload_output
+		// kommt weiterhin ueber das Grid.
 		const my_io = schritt_io.filter((r) => r.step_key === step_key);
-		const payload_inputs = my_io
-			.filter((r) => r.kind === "payload_input")
-			.map((r) => r.target)
-			.sort();
+		const active_inputs = new Set(
+			my_io.filter((r) => r.kind === "payload_input").map((r) => r.target)
+		);
 		const payload_outputs = my_io
 			.filter((r) => r.kind === "payload_output")
 			.map((r) => r.target)
 			.sort();
 
-		// inputs: payload_inputs (alphabetisch) + 1 generic step_input am Ende
-		// outputs: payload_outputs (alphabetisch) + 1 generic step_done am Ende
 		const meta = { inputs: {}, outputs: {} };
-		payload_inputs.forEach((f, i) => {
-			meta.inputs[`input_${i + 1}`] = { kind: "payload_input", target: f };
+		all_input_fields.forEach((f, i) => {
+			meta.inputs[`input_${i + 1}`] = {
+				kind: "payload_input",
+				target: f,
+				active: active_inputs.has(f),
+			};
 		});
-		meta.inputs[`input_${payload_inputs.length + 1}`] = { kind: "step_input", target: null };
+		meta.inputs[`input_${all_input_fields.length + 1}`] = { kind: "step_input", target: null };
 
 		payload_outputs.forEach((f, i) => {
 			meta.outputs[`output_${i + 1}`] = { kind: "payload_output", target: f };
 		});
 		meta.outputs[`output_${payload_outputs.length + 1}`] = { kind: "step_done", target: null };
 
-		return { meta, payload_inputs, payload_outputs };
+		return { meta, all_input_fields, payload_outputs, active_inputs };
 	}
 
 	function _node_html(step) {
@@ -200,6 +205,16 @@
 		const need_auto_layout = schritte.some((s) => s.editor_x == null || s.editor_y == null);
 		const auto_pos = need_auto_layout ? _topological_layout(schritte, schritt_io) : {};
 
+		// Alle in payload_field_specs deklarierten Felder, alphabetisch sortiert —
+		// das ist die Grundlage fuer die Input-Ports JEDES Tasks (Phase-10-Fix B):
+		// jeder Task bekommt einen Port pro Feld; "aktiv" wenn eine payload_input-Zeile
+		// existiert, sonst "open" (drag-droppable).
+		const all_input_fields = (payload_field_specs || [])
+			.map((s) => (s.fieldname || "").trim())
+			.filter(Boolean)
+			.slice()
+			.sort();
+
 		// Process-Inputs sammeln: alle payload_field_specs, die kein Task als output deklariert.
 		const output_fields = new Set(
 			schritt_io.filter((r) => r.kind === "payload_output").map((r) => r.target)
@@ -241,18 +256,24 @@
 			node_id_by_step[PROCESS_INPUTS_NODE] = id;
 		}
 
-		// 2. Schritt-Knoten
+		// 2. Schritt-Knoten — input-Ports = all_input_fields + step_input,
+		// output-Ports = aktive payload_outputs + step_done.
+		const node_port_meta_for_styling = {};
 		for (const step of schritte) {
 			const sk = (step.step_key || "").trim();
 			if (!sk) continue;
-			const { meta, payload_inputs, payload_outputs } = _build_port_meta(sk, schritt_io);
-			port_meta_by_node[sk] = { ...meta, payload_inputs, payload_outputs };
+			const { meta, payload_outputs, active_inputs } = _build_port_meta(
+				sk,
+				schritt_io,
+				all_input_fields
+			);
+			port_meta_by_node[sk] = { ...meta, all_input_fields, payload_outputs };
 			const x = step.editor_x != null ? step.editor_x : (auto_pos[sk]?.x ?? 300);
 			const y = step.editor_y != null ? step.editor_y : (auto_pos[sk]?.y ?? 40);
 			const html = _node_html(step);
 			const id = editor.addNode(
 				sk,
-				payload_inputs.length + 1, // +1 fuer generic step_input
+				all_input_fields.length + 1, // +1 fuer generic step_input
 				payload_outputs.length + 1, // +1 fuer generic step_done
 				x,
 				y,
@@ -261,6 +282,7 @@
 				html
 			);
 			node_id_by_step[sk] = id;
+			node_port_meta_for_styling[id] = { active_inputs, payload_outputs };
 		}
 
 		// 3. Edges aus schritt_io ableiten
@@ -268,13 +290,13 @@
 		for (const r of schritt_io) {
 			if (r.kind === "payload_output") producer_by_field[r.target] = r.step_key;
 		}
-		// 3a. payload_input → producer-Edge oder Process-Inputs-Edge
+		// 3a. payload_input → producer-Edge oder Process-Inputs-Edge.
+		// dst-Port-Index richtet sich nach all_input_fields (stabil pro Task).
 		for (const r of schritt_io) {
 			if (r.kind !== "payload_input") continue;
 			const dst_node_id = node_id_by_step[r.step_key];
 			if (!dst_node_id) continue;
-			const dst_meta = port_meta_by_node[r.step_key];
-			const dst_port_idx = dst_meta.payload_inputs.indexOf(r.target);
+			const dst_port_idx = all_input_fields.indexOf(r.target);
 			if (dst_port_idx < 0) continue;
 			const dst_class = `input_${dst_port_idx + 1}`;
 
@@ -301,21 +323,48 @@
 				console.warn("process_editor: addConnection failed", e);
 			}
 		}
-		// 3b. step_input → step_done-Edge (generic ports)
+		// 3b. step_input → step_done-Edge (generic ports am Ende der Port-Liste).
 		for (const r of schritt_io) {
 			if (r.kind !== "step_input") continue;
 			const src_node_id = node_id_by_step[r.target];
 			const dst_node_id = node_id_by_step[r.step_key];
 			if (!src_node_id || !dst_node_id) continue;
 			const src_meta = port_meta_by_node[r.target];
-			const dst_meta = port_meta_by_node[r.step_key];
 			const src_class = `output_${src_meta.payload_outputs.length + 1}`;
-			const dst_class = `input_${dst_meta.payload_inputs.length + 1}`;
+			const dst_class = `input_${all_input_fields.length + 1}`;
 			try {
 				editor.addConnection(src_node_id, dst_node_id, src_class, dst_class);
 			} catch (e) {
 				console.warn("process_editor: addConnection (step_input) failed", e);
 			}
+		}
+
+		// 3c. Port-Styling: leere payload_input-Ports markieren + Titel-Tooltips setzen.
+		// Drawflow rendert Ports als <div class="input input_N"></div> ohne Field-Bezug,
+		// daher walken wir die DOM-Elemente nach addNode.
+		for (const [id, info] of Object.entries(node_port_meta_for_styling)) {
+			const node_el = container.querySelector(`#node-${id}`);
+			if (!node_el) continue;
+			const input_divs = node_el.querySelectorAll(".inputs > .input");
+			input_divs.forEach((el, i) => {
+				if (i < all_input_fields.length) {
+					const f = all_input_fields[i];
+					el.setAttribute("title", `payload_input: ${f}`);
+					if (!info.active_inputs.has(f)) el.classList.add("pe-port-empty");
+				} else {
+					el.setAttribute("title", "step_input");
+					el.classList.add("pe-port-generic");
+				}
+			});
+			const output_divs = node_el.querySelectorAll(".outputs > .output");
+			output_divs.forEach((el, i) => {
+				if (i < info.payload_outputs.length) {
+					el.setAttribute("title", `payload_output: ${info.payload_outputs[i]}`);
+				} else {
+					el.setAttribute("title", "step_done");
+					el.classList.add("pe-port-generic");
+				}
+			});
 		}
 
 		// 4. Event-Handler
@@ -346,6 +395,12 @@
 				console.warn("process_editor: removeSingleConnection failed", e);
 			}
 		};
+		const _set_input_port_empty = (input_id, input_class, is_empty) => {
+			const el = container.querySelector(`#node-${input_id} .inputs > .input.${input_class}`);
+			if (!el) return;
+			if (is_empty) el.classList.add("pe-port-empty");
+			else el.classList.remove("pe-port-empty");
+		};
 
 		editor.on("connectionCreated", (info) => {
 			if (read_only) {
@@ -370,7 +425,7 @@
 			}
 
 			// payload_output → payload_input: Field muss matchen,
-			// dann sicherstellen dass die schritt_io-Zeile existiert (idempotent add).
+			// dann idempotent payload_input-Zeile beim consumer anlegen.
 			if (src_meta.kind === "payload_output" && dst_meta.kind === "payload_input") {
 				if (src_meta.target !== dst_meta.target) {
 					_reject_connection(
@@ -387,6 +442,8 @@
 						{ kind: "payload_output", step_key: src_step, target: src_meta.target },
 						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
 					);
+				dst_meta.active = true;
+				_set_input_port_empty(info.input_id, info.input_class, false);
 				return;
 			}
 			// process_input → payload_input: Field muss matchen.
@@ -406,6 +463,8 @@
 						{ kind: "process_input", step_key: PROCESS_INPUTS_NODE, target: src_meta.target },
 						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
 					);
+				dst_meta.active = true;
+				_set_input_port_empty(info.input_id, info.input_class, false);
 				return;
 			}
 			// step_done → step_input
@@ -441,6 +500,8 @@
 						{ kind: "payload_output", step_key: src_step, target: src_meta.target },
 						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
 					);
+				dst_meta.active = false;
+				_set_input_port_empty(info.input_id, info.input_class, true);
 				return;
 			}
 			// process_input → payload_input: payload_input-Zeile entfernen.
@@ -450,6 +511,8 @@
 						{ kind: "process_input", step_key: PROCESS_INPUTS_NODE, target: src_meta.target },
 						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
 					);
+				dst_meta.active = false;
+				_set_input_port_empty(info.input_id, info.input_class, true);
 				return;
 			}
 			// step_done → step_input

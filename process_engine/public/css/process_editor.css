@@ -132,6 +132,24 @@
 	pointer-events: none;
 }
 
+/* Phase 10-Fix B: leere payload_input-Ports — User kann drauf droppen,
+   um eine neue payload_input-Zeile zu erzeugen. */
+.drawflow .drawflow-node .input.pe-port-empty {
+	background: transparent;
+	border: 1px dashed #adb5bd;
+}
+.drawflow .drawflow-node .input.pe-port-empty:hover {
+	background: rgba(25, 118, 210, 0.15);
+	border-style: solid;
+	border-color: #1976d2;
+}
+
+/* Generische step_input / step_done-Ports leicht abgesetzt. */
+.drawflow .drawflow-node .input.pe-port-generic,
+.drawflow .drawflow-node .output.pe-port-generic {
+	background: #495057;
+}
+
 /* Process-Inputs-Knoten */
 .drawflow .drawflow-node.pe-process-inputs {
 	background: #f0f7ff;
