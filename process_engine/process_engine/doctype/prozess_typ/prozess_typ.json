@@ -11,6 +11,8 @@
   "is_active",
   "beschreibung",
   "default_process_type",
+  "section_versions",
+  "versions_html",
   "section_triggers",
   "triggers",
   "section_plugins",
@@ -54,6 +56,16 @@
    "fieldname": "default_process_type",
    "fieldtype": "Data",
    "label": "Default Process Type"
+  },
+  {
+   "fieldname": "section_versions",
+   "fieldtype": "Section Break",
+   "label": "Versionen"
+  },
+  {
+   "fieldname": "versions_html",
+   "fieldtype": "HTML",
+   "label": "Versionen"
   },
   {
    "fieldname": "section_triggers",
@@ -109,7 +121,16 @@
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
- "links": [],
+ "links": [
+  {
+   "link_doctype": "Prozess Version",
+   "link_fieldname": "prozess_typ"
+  },
+  {
+   "link_doctype": "Prozess Instanz",
+   "link_fieldname": "prozess_typ"
+  }
+ ],
  "modified": "2026-05-18 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Process Engine",

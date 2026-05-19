@@ -25,6 +25,7 @@ app_include_js = [
 # /assets/process_engine/... beginnen, weil die App jetzt eigenstaendig ist.
 doctype_js = {
 	"Prozess Instanz": "process_engine/doctype/prozess_instanz/prozess_instanz.js",
+	"Prozess Typ": "process_engine/doctype/prozess_typ/prozess_typ.js",
 	"Prozess Version": "process_engine/doctype/prozess_version/prozess_version.js",
 }
 
