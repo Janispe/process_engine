@@ -13,6 +13,14 @@ app_version = "0.0.1"
 boot_session = "process_engine.process_engine.processes.triggers.add_to_boot"
 
 
+# Global eingebunden in jeder Desk-Session — process_triggers.js liest die
+# bootinfo-Trigger und haengt "Prozess starten"-Buttons an die jeweiligen
+# Source-Doctypes (Mietvertrag, Wohnung, ...).
+app_include_js = [
+	"/assets/process_engine/js/process_triggers.js",
+]
+
+
 # Doctype-JS: prozess-spezifische Form-Skripte. JS-Asset-Pfade muessen mit
 # /assets/process_engine/... beginnen, weil die App jetzt eigenstaendig ist.
 doctype_js = {
