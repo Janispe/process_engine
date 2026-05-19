@@ -1,3 +1,5 @@
+[pre_model_sync]
+
 [post_model_sync]
 process_engine.process_engine.patches.post_model_sync.migrate_doctype_modules
 process_engine.process_engine.patches.post_model_sync.mark_legacy_engine_patches_executed
