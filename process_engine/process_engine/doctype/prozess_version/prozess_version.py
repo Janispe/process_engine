@@ -263,17 +263,30 @@ class ProzessVersion(Document):
 			else:
 				frappe.throw(_("Schritt I/O: kind '{0}' ist ungueltig.").format(kind))
 
-		# Variante-Map: step_key → sichtbar_fuer_prozess_typ
+		# Variante-Map: step_key → sichtbar_fuer_prozess_typ (App-spezifischer Freetext)
 		variant_of_step: dict[str, str] = {}
 		for s in schritte:
 			key = (s.get("step_key") or "").strip()
 			if key:
 				variant_of_step[key] = (s.get("sichtbar_fuer_prozess_typ") or "Beide").strip()
 
-		# Pro Variante (Mieterwechsel + Erstvermietung) Reachability + Cycle validieren.
-		# "Beide" zaehlt in jeder Variante als sichtbar.
-		for variant in ("Mieterwechsel", "Erstvermietung"):
-			visible = {sk for sk in step_keys if variant_of_step.get(sk) in (variant, "Beide")}
+		# Phase 9: Varianten dynamisch aus den vorkommenden Werten ableiten —
+		# kein Hardcoding mehr von Mieterwechsel/Erstvermietung in der generischen Engine.
+		# "Beide" ist der spezielle Universal-Marker und wird selbst NICHT als Variante
+		# behandelt — er kennzeichnet nur "in jeder Variante sichtbar".
+		distinct_variants = {
+			v for v in variant_of_step.values() if v and v != "Beide"
+		}
+		# Wenn nur "Beide"-Schritte existieren (keine echte Variante): einmaliger
+		# Durchlauf mit Pseudo-Variante "__default__" wo alle Schritte sichtbar sind.
+		if not distinct_variants:
+			distinct_variants = {"__default__"}
+
+		for variant in sorted(distinct_variants):
+			if variant == "__default__":
+				visible = set(step_keys)
+			else:
+				visible = {sk for sk in step_keys if variant_of_step.get(sk) in (variant, "Beide")}
 			# Variante-spezifischer Producer-Map (nur sichtbare Producer zaehlen)
 			variant_producer: dict[str, str] = {
 				field: producer

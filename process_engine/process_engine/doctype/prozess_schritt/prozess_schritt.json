@@ -76,11 +76,11 @@
   },
   {
    "default": "Beide",
+   "description": "Variante des Prozess Typs, in der dieser Schritt sichtbar ist. 'Beide' bedeutet universal (sichtbar in jeder Variante). Werte sind App-spezifisch — die Engine leitet die Liste der verfuegbaren Varianten dynamisch aus den vorkommenden Werten innerhalb derselben Prozess Version ab.",
    "fieldname": "sichtbar_fuer_prozess_typ",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Sichtbar fuer Prozess-Typ",
-   "options": "Mieterwechsel\nErstvermietung\nBeide",
+   "label": "Sichtbar fuer Prozess-Typ-Variante",
    "reqd": 1
   },
   {
