@@ -9,7 +9,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import add_days, get_datetime, getdate, now_datetime, today
 
-from hausverwaltung.hausverwaltung.integrations.temporal.adapters.process_adapter import (
+from process_engine.process_engine.integrations.temporal.adapters.process_adapter import (
 	ACTION_BYPASS_COMPLETE,
 	ACTION_CONFIRM_PRINT_TASK,
 	ACTION_CREATE_LINKED_DOC,
@@ -21,8 +21,8 @@ from hausverwaltung.hausverwaltung.integrations.temporal.adapters.process_adapte
 	is_status_action,
 	is_task_action,
 )
-from hausverwaltung.hausverwaltung.integrations.temporal.config import get_default_backend_for_doctype
-from hausverwaltung.hausverwaltung.integrations.temporal.orchestrator import (
+from process_engine.process_engine.integrations.temporal.config import get_default_backend_for_doctype
+from process_engine.process_engine.integrations.temporal.orchestrator import (
 	dispatch_action_and_wait,
 	ensure_workflow_started,
 )
