@@ -15,10 +15,11 @@ from process_engine.process_engine.processes.task_registry import (
 def _ensure_runtime_registered(runtime_doctype: str):
 	if get_process_runtime_config(runtime_doctype):
 		return
-	if runtime_doctype == "Mieterwechsel":
-		from process_engine.process_engine.processes.definitions.mieterwechsel import get_mieterwechsel_runtime
+	# Phase 8: Consumer-Apps registrieren ihre Domain-Runtimes via Hook
+	# `process_engine_runtimes`. Kein harter Domain-Import mehr in process_engine.
+	from process_engine.process_engine.processes import ensure_process_runtimes_registered
 
-		get_mieterwechsel_runtime()
+	ensure_process_runtimes_registered()
 
 
 _LOCKED_SCALAR_FIELDS = (
