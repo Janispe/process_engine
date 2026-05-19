@@ -189,7 +189,7 @@ class ProzessVersion(Document):
 		return tuple(sorted(rows))
 
 	def _validate_schritt_io(self) -> None:
-		"""Phase 9: Reachability + Cycle + Multi-Producer.
+		"""Phase 9: Reachability + Cycle + Multi-Producer + Variante.
 
 		Wird bei jedem Save geprueft, mit Ausnahme:
 		- Migrations-Pfad (flags.from_migration): bestehende v2/v3 werden
@@ -202,13 +202,25 @@ class ProzessVersion(Document):
 		if not schritte:
 			return
 		schritt_io = self.get("schritt_io") or []
+		# Pflicht: schritt_io MUSS gepflegt sein, sobald Schritte da sind.
+		# schritt_kanten-Fallback existiert NUR fuer Versionen, die durch
+		# migrate_to_explicit_io noch nicht befuellt wurden (= zur Save-Zeit
+		# nie der Fall, da der Patch bevor User-Save laeuft).
+		if not schritt_io:
+			frappe.throw(
+				_(
+					"Phase 9: explizite I/O-Deklarationen sind fuer Versionen mit Schritten erforderlich. "
+					"Bitte in 'Schritt I/O' pro Schritt mindestens die Inputs/Outputs eintragen."
+				)
+			)
 		spec_keys = {(s.get("fieldname") or "").strip() for s in (self.get("payload_field_specs") or [])}
 		step_keys = {(s.get("step_key") or "").strip() for s in schritte if (s.get("step_key") or "").strip()}
 
+		# Phase 9 / Variante-Aware: globale Strukturen sammeln, dann pro Variante validieren.
 		payload_inputs_by_step: dict[str, set[str]] = {}
 		payload_outputs_by_step: dict[str, set[str]] = {}
 		step_inputs_by_step: dict[str, set[str]] = {}
-		producer_by_field: dict[str, str] = {}
+		producer_by_field: dict[str, str] = {}  # multi-producer ist global ein Fehler
 
 		for row in schritt_io:
 			sk = (row.get("step_key") or "").strip()
@@ -251,54 +263,87 @@ class ProzessVersion(Document):
 			else:
 				frappe.throw(_("Schritt I/O: kind '{0}' ist ungueltig.").format(kind))
 
-		# Reachability: jeder payload_input MUSS Process-Init oder Vorgaenger-Output sein.
-		for sk, inputs in payload_inputs_by_step.items():
-			for field in inputs:
-				if field in producer_by_field:
-					if producer_by_field[field] == sk:
+		# Variante-Map: step_key → sichtbar_fuer_prozess_typ
+		variant_of_step: dict[str, str] = {}
+		for s in schritte:
+			key = (s.get("step_key") or "").strip()
+			if key:
+				variant_of_step[key] = (s.get("sichtbar_fuer_prozess_typ") or "Beide").strip()
+
+		# Pro Variante (Mieterwechsel + Erstvermietung) Reachability + Cycle validieren.
+		# "Beide" zaehlt in jeder Variante als sichtbar.
+		for variant in ("Mieterwechsel", "Erstvermietung"):
+			visible = {sk for sk in step_keys if variant_of_step.get(sk) in (variant, "Beide")}
+			# Variante-spezifischer Producer-Map (nur sichtbare Producer zaehlen)
+			variant_producer: dict[str, str] = {
+				field: producer
+				for field, producer in producer_by_field.items()
+				if producer in visible
+			}
+			# Reachability pro Variante: jeder sichtbare Input muss aufloesbar sein
+			for sk in visible:
+				for field in payload_inputs_by_step.get(sk, set()):
+					if field in variant_producer:
+						if variant_producer[field] == sk:
+							frappe.throw(
+								_(
+									"Variante '{0}': Schritt '{1}' liest und schreibt dasselbe Feld '{2}'."
+								).format(variant, sk, field)
+							)
+						continue
+					if field in producer_by_field and producer_by_field[field] not in visible:
 						frappe.throw(
-							_("Schritt '{0}' liest und schreibt dasselbe Feld '{1}'.").format(sk, field)
+							_(
+								"Variante '{0}': Schritt '{1}' liest Feld '{2}', dessen Producer '{3}' in dieser Variante nicht sichtbar ist."
+							).format(variant, sk, field, producer_by_field[field])
 						)
-					continue
-				# Sonst: Process-Input (kein Task schreibt es) → OK
-				continue
+					# Sonst: Process-Input (kein Task schreibt es) — OK
+			# step_inputs muessen ebenfalls auf sichtbare Steps zeigen
+			for sk in visible:
+				for target_sk in step_inputs_by_step.get(sk, set()):
+					if target_sk not in visible:
+						frappe.throw(
+							_(
+								"Variante '{0}': Schritt '{1}' hat step_input '{2}', der in dieser Variante nicht sichtbar ist."
+							).format(variant, sk, target_sk)
+						)
+			# DAG pro Variante aufbauen + Cycle-Check
+			deps: dict[str, set[str]] = {sk: set() for sk in visible}
+			for sk in visible:
+				for field in payload_inputs_by_step.get(sk, set()):
+					producer = variant_producer.get(field)
+					if producer and producer != sk:
+						deps[sk].add(producer)
+				for target_sk in step_inputs_by_step.get(sk, set()):
+					if target_sk in visible:
+						deps[sk].add(target_sk)
+			WHITE, GRAY, BLACK = 0, 1, 2
+			color = {sk: WHITE for sk in visible}
 
-		# DAG aufbauen: Deps = producer der payload_inputs ∪ step_inputs
-		deps: dict[str, set[str]] = {sk: set() for sk in step_keys}
-		for sk, inputs in payload_inputs_by_step.items():
-			for field in inputs:
-				producer = producer_by_field.get(field)
-				if producer and producer != sk:
-					deps[sk].add(producer)
-		for sk, sins in step_inputs_by_step.items():
-			deps[sk].update(sins)
+			def dfs(node: str, stack: list[str]) -> None:
+				color[node] = GRAY
+				stack.append(node)
+				for nxt in deps.get(node, set()):
+					if nxt not in color:
+						continue
+					if color[nxt] == GRAY:
+						cycle_idx = stack.index(nxt)
+						cycle_path = " → ".join(stack[cycle_idx:] + [nxt])
+						frappe.throw(
+							_("Variante '{0}': DAG-Zyklus in schritt_io: {1}").format(variant, cycle_path)
+						)
+					if color[nxt] == WHITE:
+						dfs(nxt, stack)
+				stack.pop()
+				color[node] = BLACK
 
-		# Cycle-Detection via DFS
-		WHITE, GRAY, BLACK = 0, 1, 2
-		color = {sk: WHITE for sk in step_keys}
-
-		def dfs(node: str, stack: list[str]) -> None:
-			color[node] = GRAY
-			stack.append(node)
-			for nxt in deps.get(node, set()):
-				if nxt not in color:
-					continue
-				if color[nxt] == GRAY:
-					cycle_idx = stack.index(nxt)
-					cycle = " → ".join(stack[cycle_idx:] + [nxt])
-					frappe.throw(_("DAG-Zyklus in schritt_io: {0}").format(cycle))
-				if color[nxt] == WHITE:
-					dfs(nxt, stack)
-			stack.pop()
-			color[node] = BLACK
-
-		for sk in step_keys:
-			if color.get(sk) == WHITE:
-				dfs(sk, [])
+			for sk in visible:
+				if color.get(sk) == WHITE:
+					dfs(sk, [])
 
 		# Handler-Konsistenz: create_linked_doc.konfig.store_in_payload_field
 		# und python_action mit set_flag-Handler.konfig.target_field muessen
-		# als payload_output des Schritts deklariert sein.
+		# als payload_output des Schritts deklariert sein. Global (nicht variant-spezifisch).
 		self._validate_handler_output_consistency(payload_outputs_by_step)
 
 	def _validate_handler_output_consistency(self, payload_outputs_by_step: dict[str, set[str]]) -> None:

@@ -121,8 +121,22 @@ def execute():
 				)
 
 		if not io_rows:
-			# Version hat keinen ableitbaren I/O; ueberspringen. Sie laeuft
-			# weiter ueber den schritt_kanten-Fallback bis manuell befuellt.
+			# Version hat keinen ableitbaren I/O. Phase 9 verbietet das fuer
+			# kuenftige Saves (siehe prozess_version._validate_schritt_io) —
+			# diese Version muss manuell nachgepflegt werden, sonst wirft sie
+			# beim naechsten User-Save. Wir loggen sie deutlich.
+			frappe.log_error(
+				title=f"Phase 9 Migration: Version '{v_name}' ohne ableitbare I/O",
+				message=(
+					f"Version '{v_name}' (prozess_typ='{v.get('prozess_typ')}') hat schritte, aber "
+					"keine ableitbare schritt_io. Manuelles Nachpflegen erforderlich, sonst "
+					"verweigert die Engine kuenftige Saves dieser Version."
+				),
+			)
+			print(
+				f"[Phase 9] WARN: Version '{v_name}' (typ='{v.get('prozess_typ')}') hat keine "
+				"ableitbare I/O — bitte manuell nachpflegen."
+			)
 			continue
 
 		for row in io_rows:
