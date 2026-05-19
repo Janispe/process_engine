@@ -17,6 +17,8 @@
   "section_payload_specs",
   "payload_field_specs",
   "schritte",
+  "section_schritt_io",
+  "schritt_io",
   "schritt_kanten",
   "dag_preview_html",
   "amended_from"
@@ -96,11 +98,24 @@
    "options": "Prozess Schritt"
   },
   {
-   "description": "Gerichtete Kanten: <step_key> haengt von <depends_on_step_key> ab. AND-Semantik bei mehreren Kanten auf denselben Schritt.",
+   "fieldname": "section_schritt_io",
+   "fieldtype": "Section Break",
+   "label": "I/O-Deklarationen (Datenfluss + Ordering)"
+  },
+  {
+   "description": "Phase 9: pro Schritt eine Zeile pro deklariertem Input/Output. payload_input/output bezieht sich auf payload_field_specs; step_input ist pure Ordering-Dependency.",
+   "fieldname": "schritt_io",
+   "fieldtype": "Table",
+   "label": "Schritt I/O",
+   "options": "Prozess Schritt IO"
+  },
+  {
+   "description": "DEPRECATED (Phase 9): Abhaengigkeiten werden jetzt aus schritt_io abgeleitet. Diese Tabelle bleibt als Migration-only-Fallback fuer unmigrierte Records — Phase 10 entfernt sie.",
    "fieldname": "schritt_kanten",
    "fieldtype": "Table",
-   "label": "Abhaengigkeiten",
-   "options": "Prozess Schritt Kante"
+   "label": "Abhaengigkeiten (deprecated)",
+   "options": "Prozess Schritt Kante",
+   "hidden": 1
   },
   {
    "fieldname": "dag_preview_html",

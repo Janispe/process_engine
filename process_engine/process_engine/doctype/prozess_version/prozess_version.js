@@ -16,6 +16,7 @@ frappe.ui.form.on("Prozess Version", {
 			"gueltig_bis",
 			"payload_field_specs",
 			"schritte",
+			"schritt_io",
 			"schritt_kanten",
 		];
 

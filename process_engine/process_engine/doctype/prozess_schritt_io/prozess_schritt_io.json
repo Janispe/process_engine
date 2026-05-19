@@ -1,0 +1,60 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-05-19 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "step_key",
+  "kind",
+  "target",
+  "description"
+ ],
+ "fields": [
+  {
+   "description": "step_key des Schritts, dem diese I/O-Zeile zugeordnet ist. Muss in der gleichen Prozess Version vorhanden sein.",
+   "fieldname": "step_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Step Key",
+   "reqd": 1
+  },
+  {
+   "description": "payload_input/output bezieht sich auf ein payload_field_spec der Version. step_input ist eine pure Ordering-Dependency auf einen anderen Schritt.",
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Kind",
+   "options": "payload_input\npayload_output\nstep_input",
+   "reqd": 1
+  },
+  {
+   "description": "Bei payload_input/output der fieldname aus payload_field_specs. Bei step_input der step_key des Vorgaenger-Schritts.",
+   "fieldname": "target",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Target",
+   "reqd": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "label": "Beschreibung (optional)"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Engine",
+ "name": "Prozess Schritt IO",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

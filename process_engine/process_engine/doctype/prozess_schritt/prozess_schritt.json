@@ -98,11 +98,13 @@
    "options": "JSON"
   },
   {
+   "description": "DEPRECATED (Phase 9): Output-Pointer leben jetzt in Prozess Version > Schritt I/O als payload_output. Migrations-Patch migrate_to_explicit_io liest dieses Feld einmalig.",
    "fieldname": "mapping_flag",
    "fieldtype": "Select",
    "hidden": 1,
-   "label": "Mapping Flag",
-   "options": "\nneue_adresse_altmieter_erfasst\nzaehler_geprueft\nzaehlerstaende_eingetragen\nabnahmeformular_file\nmietvertrag_unterschrieben_file"
+   "label": "Mapping Flag (deprecated)",
+   "options": "\nneue_adresse_altmieter_erfasst\nzaehler_geprueft\nzaehlerstaende_eingetragen\nabnahmeformular_file\nmietvertrag_unterschrieben_file",
+   "read_only": 1
   },
   {
    "fieldname": "dokument_typ_tag",

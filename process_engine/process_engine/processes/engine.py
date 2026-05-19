@@ -703,11 +703,10 @@ class ProcessEngine:
 			frappe.throw(_("Aufgabe ist noch nicht freigegeben (Aktion '{0}').").format(action))
 
 	def _task_filled_payload_fields(self, doc: Document) -> set[str]:
-		"""Sammelt payload-fieldnames, die durch create_linked_doc-Tasks der aktiven
-		Version befuellt werden. Wird in _validate_payload_required_fields als
-		Ausnahme-Liste verwendet."""
-		import json as _json
-
+		"""Phase 9: liest payload_output-Zeilen aus schritt_io. Pflicht-Filter
+		bleibt: nur Outputs von Pflicht-Schritten zaehlen, sonst kann ein
+		optionaler Schritt die reqd-Pflicht heimlich aushebeln.
+		"""
 		filled: set[str] = set()
 		version_name = (doc.get(self.config.process_version_fieldname) or "").strip()
 		if not version_name or not frappe.db.exists("Prozess Version", version_name):
@@ -716,25 +715,21 @@ class ProcessEngine:
 			version = frappe.get_cached_doc("Prozess Version", version_name)
 		except Exception:
 			return filled
+		pflicht_step_keys: set[str] = set()
 		for schritt in (version.get("schritte") or []):
-			if (schritt.get("task_type") or "").strip() != TASK_TYPE_CREATE_LINKED_DOC:
+			if int(schritt.get("pflicht") or 0):
+				key = (schritt.get("step_key") or "").strip()
+				if key:
+					pflicht_step_keys.add(key)
+		for row in (version.get("schritt_io") or []):
+			if (row.get("kind") or "").strip() != "payload_output":
 				continue
-			# Nur Pflicht-Schritte zaehlen — ein optionaler create_linked_doc-Schritt
-			# darf nicht heimlich die reqd-Pflicht aus dem Completion-Blocker raushebeln.
-			if not int(schritt.get("pflicht") or 0):
+			sk = (row.get("step_key") or "").strip()
+			if sk not in pflicht_step_keys:
 				continue
-			raw = (schritt.get("konfig_json") or schritt.get("config_json") or "").strip()
-			if not raw:
-				continue
-			try:
-				cfg = _json.loads(raw)
-			except (ValueError, TypeError):
-				continue
-			if not isinstance(cfg, dict):
-				continue
-			field = (cfg.get("store_in_payload_field") or "").strip()
-			if field:
-				filled.add(field)
+			target = (row.get("target") or "").strip()
+			if target:
+				filled.add(target)
 		return filled
 
 	def _validate_version_lock(self, doc: Document) -> None:
@@ -1055,19 +1050,53 @@ class ProcessEngine:
 			order_by="reihenfolge asc, idx asc",
 		)
 
-		# Edges der Version laden (DAG-Topologie aus Prozess Schritt Kante)
-		edges = frappe.get_all(
-			"Prozess Schritt Kante",
+		# Phase 9: DAG primaer aus schritt_io ableiten:
+		# Deps(T) = {producer von jedem payload_input(T)} ∪ {step_input(T)}.
+		# Fallback auf schritt_kanten nur fuer Versionen ohne schritt_io
+		# (Migration-only — Phase 10 entfernt das).
+		io_rows = frappe.get_all(
+			"Prozess Schritt IO",
 			filters={"parent": version_name, "parenttype": self.config.process_version_doctype},
-			fields=["step_key", "depends_on_step_key"],
+			fields=["step_key", "kind", "target"],
 		)
 		deps_by_step: dict[str, list[str]] = {}
-		for e in edges or []:
-			sk = (e.get("step_key") or "").strip()
-			dep = (e.get("depends_on_step_key") or "").strip()
-			if not sk or not dep:
-				continue
-			deps_by_step.setdefault(sk, []).append(dep)
+		if io_rows:
+			# Producer-Map: payload-field → step_key der writenden Task
+			producer_by_field: dict[str, str] = {}
+			for row in io_rows:
+				if (row.get("kind") or "").strip() == "payload_output":
+					target = (row.get("target") or "").strip()
+					sk = (row.get("step_key") or "").strip()
+					if target and sk:
+						producer_by_field[target] = sk
+			for row in io_rows:
+				sk = (row.get("step_key") or "").strip()
+				if not sk:
+					continue
+				kind = (row.get("kind") or "").strip()
+				target = (row.get("target") or "").strip()
+				if not target:
+					continue
+				if kind == "payload_input":
+					producer = producer_by_field.get(target)
+					if producer and producer != sk:
+						deps_by_step.setdefault(sk, []).append(producer)
+				elif kind == "step_input":
+					if target != sk:
+						deps_by_step.setdefault(sk, []).append(target)
+		else:
+			# Fallback: alte schritt_kanten — Migration-only
+			edges = frappe.get_all(
+				"Prozess Schritt Kante",
+				filters={"parent": version_name, "parenttype": self.config.process_version_doctype},
+				fields=["step_key", "depends_on_step_key"],
+			)
+			for e in edges or []:
+				sk = (e.get("step_key") or "").strip()
+				dep = (e.get("depends_on_step_key") or "").strip()
+				if not sk or not dep:
+					continue
+				deps_by_step.setdefault(sk, []).append(dep)
 
 		# Pass 1: sichtbare step_keys vorab bestimmen, damit Pass 2 Deps darauf filtern kann
 		visible_step_keys: set[str] = {

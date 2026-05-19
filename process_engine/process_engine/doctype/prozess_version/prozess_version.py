@@ -42,6 +42,7 @@ class ProzessVersion(Document):
 		self._validate_runtime_doctype()
 		self._normalize_rows()
 		self._validate_active_uniqueness()
+		self._validate_schritt_io()
 
 	def _enforce_active_immutability(self) -> None:
 		if self.is_new():
@@ -106,7 +107,23 @@ class ProzessVersion(Document):
 			diffs.append("schritt_kanten")
 		if self._field_specs_fingerprint(before) != self._field_specs_fingerprint(self):
 			diffs.append("payload_field_specs")
+		if self._schritt_io_fingerprint(before) != self._schritt_io_fingerprint(self):
+			diffs.append("schritt_io")
 		return diffs
+
+	@staticmethod
+	def _schritt_io_fingerprint(doc) -> tuple:
+		"""Phase 9: schritt_io ist pro Version eingefroren wie schritte/kanten/specs."""
+		rows = []
+		for r in doc.get("schritt_io") or []:
+			rows.append(
+				(
+					(r.get("step_key") or "").strip(),
+					(r.get("kind") or "").strip(),
+					(r.get("target") or "").strip(),
+				)
+			)
+		return tuple(sorted(rows))
 
 	@staticmethod
 	def _field_specs_fingerprint(doc) -> tuple:
@@ -170,6 +187,156 @@ class ProzessVersion(Document):
 				)
 			)
 		return tuple(sorted(rows))
+
+	def _validate_schritt_io(self) -> None:
+		"""Phase 9: Reachability + Cycle + Multi-Producer.
+
+		Wird bei jedem Save geprueft, mit Ausnahme:
+		- Migrations-Pfad (flags.from_migration): bestehende v2/v3 werden
+		  schrittweise befuellt, vorher noch leer — kein Pflicht-Check.
+		- Versionen ohne schritte (z.B. frischer Entwurf): nichts zu pruefen.
+		"""
+		if getattr(self.flags, "from_migration", False):
+			return
+		schritte = self.get("schritte") or []
+		if not schritte:
+			return
+		schritt_io = self.get("schritt_io") or []
+		spec_keys = {(s.get("fieldname") or "").strip() for s in (self.get("payload_field_specs") or [])}
+		step_keys = {(s.get("step_key") or "").strip() for s in schritte if (s.get("step_key") or "").strip()}
+
+		payload_inputs_by_step: dict[str, set[str]] = {}
+		payload_outputs_by_step: dict[str, set[str]] = {}
+		step_inputs_by_step: dict[str, set[str]] = {}
+		producer_by_field: dict[str, str] = {}
+
+		for row in schritt_io:
+			sk = (row.get("step_key") or "").strip()
+			kind = (row.get("kind") or "").strip()
+			target = (row.get("target") or "").strip()
+			if not sk or not kind or not target:
+				frappe.throw(_("Schritt I/O: step_key, kind und target sind Pflicht."))
+			if sk not in step_keys:
+				frappe.throw(
+					_("Schritt I/O: step_key '{0}' existiert nicht in den Schritten.").format(sk)
+				)
+			if kind in ("payload_input", "payload_output"):
+				if target not in spec_keys:
+					frappe.throw(
+						_(
+							"Schritt I/O ({0}, {1}): target '{2}' ist kein gueltiges payload_field_specs."
+						).format(sk, kind, target)
+					)
+				if kind == "payload_input":
+					payload_inputs_by_step.setdefault(sk, set()).add(target)
+				else:
+					if target in producer_by_field and producer_by_field[target] != sk:
+						frappe.throw(
+							_(
+								"Multi-Producer-Konflikt: Feld '{0}' wird sowohl von '{1}' als auch '{2}' geschrieben."
+							).format(target, producer_by_field[target], sk)
+						)
+					producer_by_field[target] = sk
+					payload_outputs_by_step.setdefault(sk, set()).add(target)
+			elif kind == "step_input":
+				if target not in step_keys:
+					frappe.throw(
+						_("Schritt I/O ({0}, step_input): target '{1}' ist kein gueltiger step_key.").format(sk, target)
+					)
+				if target == sk:
+					frappe.throw(
+						_("Schritt I/O ({0}, step_input): ein Schritt kann nicht sich selbst als Vorgaenger haben.").format(sk)
+					)
+				step_inputs_by_step.setdefault(sk, set()).add(target)
+			else:
+				frappe.throw(_("Schritt I/O: kind '{0}' ist ungueltig.").format(kind))
+
+		# Reachability: jeder payload_input MUSS Process-Init oder Vorgaenger-Output sein.
+		for sk, inputs in payload_inputs_by_step.items():
+			for field in inputs:
+				if field in producer_by_field:
+					if producer_by_field[field] == sk:
+						frappe.throw(
+							_("Schritt '{0}' liest und schreibt dasselbe Feld '{1}'.").format(sk, field)
+						)
+					continue
+				# Sonst: Process-Input (kein Task schreibt es) → OK
+				continue
+
+		# DAG aufbauen: Deps = producer der payload_inputs ∪ step_inputs
+		deps: dict[str, set[str]] = {sk: set() for sk in step_keys}
+		for sk, inputs in payload_inputs_by_step.items():
+			for field in inputs:
+				producer = producer_by_field.get(field)
+				if producer and producer != sk:
+					deps[sk].add(producer)
+		for sk, sins in step_inputs_by_step.items():
+			deps[sk].update(sins)
+
+		# Cycle-Detection via DFS
+		WHITE, GRAY, BLACK = 0, 1, 2
+		color = {sk: WHITE for sk in step_keys}
+
+		def dfs(node: str, stack: list[str]) -> None:
+			color[node] = GRAY
+			stack.append(node)
+			for nxt in deps.get(node, set()):
+				if nxt not in color:
+					continue
+				if color[nxt] == GRAY:
+					cycle_idx = stack.index(nxt)
+					cycle = " → ".join(stack[cycle_idx:] + [nxt])
+					frappe.throw(_("DAG-Zyklus in schritt_io: {0}").format(cycle))
+				if color[nxt] == WHITE:
+					dfs(nxt, stack)
+			stack.pop()
+			color[node] = BLACK
+
+		for sk in step_keys:
+			if color.get(sk) == WHITE:
+				dfs(sk, [])
+
+		# Handler-Konsistenz: create_linked_doc.konfig.store_in_payload_field
+		# und python_action mit set_flag-Handler.konfig.target_field muessen
+		# als payload_output des Schritts deklariert sein.
+		self._validate_handler_output_consistency(payload_outputs_by_step)
+
+	def _validate_handler_output_consistency(self, payload_outputs_by_step: dict[str, set[str]]) -> None:
+		import json as _json
+
+		for schritt in (self.get("schritte") or []):
+			sk = (schritt.get("step_key") or "").strip()
+			if not sk:
+				continue
+			task_type = (schritt.get("task_type") or "").strip()
+			handler_key = (schritt.get("handler_key") or "").strip()
+			raw = (schritt.get("konfig_json") or "").strip()
+			if not raw:
+				continue
+			try:
+				cfg = _json.loads(raw)
+			except (ValueError, TypeError):
+				continue
+			if not isinstance(cfg, dict):
+				continue
+			outputs = payload_outputs_by_step.get(sk, set())
+
+			if task_type == "create_linked_doc":
+				field = (cfg.get("store_in_payload_field") or "").strip()
+				if field and field not in outputs:
+					frappe.throw(
+						_(
+							"Schritt '{0}' (create_linked_doc): konfig.store_in_payload_field='{1}' muss als payload_output deklariert sein."
+						).format(sk, field)
+					)
+			elif task_type == "python_action" and handler_key.endswith("set_flag"):
+				field = (cfg.get("target_field") or "").strip()
+				if field and field not in outputs:
+					frappe.throw(
+						_(
+							"Schritt '{0}' (python_action set_flag): konfig.target_field='{1}' muss als payload_output deklariert sein."
+						).format(sk, field)
+					)
 
 	def _validate_runtime_doctype(self):
 		runtime_doctype = (self.runtime_doctype or "").strip()
