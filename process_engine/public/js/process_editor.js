@@ -212,25 +212,26 @@
 		const port_meta_by_node = {};
 		const node_id_by_step = {};
 
-		// 1. Process-Inputs-Knoten (links, x=20)
-		if (process_input_fields.length) {
+		// 1. Process-Inputs-Knoten (links, x=20).
+		// WICHTIG: pi_outputs, payload_outputs und HTML muessen dieselbe Reihenfolge nutzen,
+		// sonst landet die Edge auf einem falschen Drawflow-Port.
+		const sorted_pi_fields = process_input_fields.slice().sort();
+		if (sorted_pi_fields.length) {
 			const pi_outputs = {};
-			process_input_fields.forEach((f, i) => {
+			sorted_pi_fields.forEach((f, i) => {
 				pi_outputs[`output_${i + 1}`] = { kind: "process_input", target: f };
 			});
 			port_meta_by_node[PROCESS_INPUTS_NODE] = {
 				inputs: {},
 				outputs: pi_outputs,
 				is_process_inputs: true,
-				payload_outputs: process_input_fields.slice().sort(),
+				payload_outputs: sorted_pi_fields,
 			};
-			port_meta_by_node[PROCESS_INPUTS_NODE].payload_outputs = process_input_fields.slice().sort();
-			// Render
-			const html = _process_inputs_html(process_input_fields.slice().sort());
+			const html = _process_inputs_html(sorted_pi_fields);
 			const id = editor.addNode(
 				PROCESS_INPUTS_NODE,
 				0,
-				process_input_fields.length,
+				sorted_pi_fields.length,
 				20,
 				40,
 				"pe-process-inputs",
@@ -330,59 +331,84 @@
 			}, 300);
 		});
 
+		// Event-Handler werden BEWUSST nach den addConnection-Aufrufen oben registriert,
+		// damit die initial-gezeichneten Edges keinen connectionCreated-Event ausloesen.
+		const _reject_connection = (info, msg) => {
+			if (msg) _toast(msg, "red");
+			try {
+				editor.removeSingleConnection(
+					info.output_id,
+					info.input_id,
+					info.output_class,
+					info.input_class
+				);
+			} catch (e) {
+				console.warn("process_editor: removeSingleConnection failed", e);
+			}
+		};
+
 		editor.on("connectionCreated", (info) => {
+			if (read_only) {
+				_reject_connection(info, __("Aktive Version — Edits sind nicht erlaubt."));
+				return;
+			}
 			const src_node = editor.getNodeFromId(info.output_id);
 			const dst_node = editor.getNodeFromId(info.input_id);
 			const src_step = src_node?.data?.step_key;
 			const dst_step = dst_node?.data?.step_key;
 			const src_meta_node = port_meta_by_node[src_step];
 			const dst_meta_node = port_meta_by_node[dst_step];
-			if (!src_meta_node || !dst_meta_node) return;
+			if (!src_meta_node || !dst_meta_node) {
+				_reject_connection(info);
+				return;
+			}
 			const src_meta = src_meta_node.outputs[info.output_class];
 			const dst_meta = dst_meta_node.inputs[info.input_class];
-			if (!src_meta || !dst_meta) return;
+			if (!src_meta || !dst_meta) {
+				_reject_connection(info);
+				return;
+			}
 
-			// Validate Kombinationen
+			// payload_output → payload_input: Field muss matchen,
+			// dann sicherstellen dass die schritt_io-Zeile existiert (idempotent add).
 			if (src_meta.kind === "payload_output" && dst_meta.kind === "payload_input") {
 				if (src_meta.target !== dst_meta.target) {
-					_toast(
+					_reject_connection(
+						info,
 						__("Field-Mismatch: Output erzeugt '{0}', Input erwartet '{1}'.", [
 							src_meta.target,
 							dst_meta.target,
-						]),
-						"red"
-					);
-					editor.removeSingleConnection(
-						info.output_id,
-						info.input_id,
-						info.output_class,
-						info.input_class
+						])
 					);
 					return;
 				}
-				// Match — bereits via schritt_io abgedeckt
+				on_create_edge &&
+					on_create_edge(
+						{ kind: "payload_output", step_key: src_step, target: src_meta.target },
+						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
+					);
 				return;
 			}
+			// process_input → payload_input: Field muss matchen.
 			if (src_meta.kind === "process_input" && dst_meta.kind === "payload_input") {
 				if (src_meta.target !== dst_meta.target) {
-					_toast(
+					_reject_connection(
+						info,
 						__("Field-Mismatch: Process Input '{0}' passt nicht zu Input '{1}'.", [
 							src_meta.target,
 							dst_meta.target,
-						]),
-						"red"
-					);
-					editor.removeSingleConnection(
-						info.output_id,
-						info.input_id,
-						info.output_class,
-						info.input_class
+						])
 					);
 					return;
 				}
-				// Match
+				on_create_edge &&
+					on_create_edge(
+						{ kind: "process_input", step_key: PROCESS_INPUTS_NODE, target: src_meta.target },
+						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
+					);
 				return;
 			}
+			// step_done → step_input
 			if (src_meta.kind === "step_done" && dst_meta.kind === "step_input") {
 				on_create_edge &&
 					on_create_edge(
@@ -391,17 +417,11 @@
 					);
 				return;
 			}
-			// Ungueltige Kombination
-			_toast(__("Diese Port-Kombination ist nicht erlaubt."), "red");
-			editor.removeSingleConnection(
-				info.output_id,
-				info.input_id,
-				info.output_class,
-				info.input_class
-			);
+			_reject_connection(info, __("Diese Port-Kombination ist nicht erlaubt."));
 		});
 
 		editor.on("connectionRemoved", (info) => {
+			if (read_only) return;
 			const src_node = editor.getNodeFromId(info.output_id);
 			const dst_node = editor.getNodeFromId(info.input_id);
 			const src_step = src_node?.data?.step_key;
@@ -412,7 +432,27 @@
 			const src_meta = src_meta_node.outputs[info.output_class];
 			const dst_meta = dst_meta_node.inputs[info.input_class];
 			if (!src_meta || !dst_meta) return;
-			// step_done → step_input: schritt_io-Zeile loeschen
+
+			// payload_output → payload_input: payload_input-Zeile entfernen.
+			// Der Producer-Output bleibt — er kann weitere Consumer haben.
+			if (src_meta.kind === "payload_output" && dst_meta.kind === "payload_input") {
+				on_delete_edge &&
+					on_delete_edge(
+						{ kind: "payload_output", step_key: src_step, target: src_meta.target },
+						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
+					);
+				return;
+			}
+			// process_input → payload_input: payload_input-Zeile entfernen.
+			if (src_meta.kind === "process_input" && dst_meta.kind === "payload_input") {
+				on_delete_edge &&
+					on_delete_edge(
+						{ kind: "process_input", step_key: PROCESS_INPUTS_NODE, target: src_meta.target },
+						{ kind: "payload_input", step_key: dst_step, target: dst_meta.target }
+					);
+				return;
+			}
+			// step_done → step_input
 			if (src_meta.kind === "step_done" && dst_meta.kind === "step_input") {
 				on_delete_edge &&
 					on_delete_edge(
@@ -420,10 +460,6 @@
 						{ kind: "step_input", step_key: dst_step, target: src_step }
 					);
 			}
-			// payload_output/input und process_input-Edges sind aus schritt_io abgeleitet —
-			// wenn der User die Edge per UI loescht, muesste er das eigentlich im Inspector
-			// machen (payload_input-Zeile entfernen). Hier ignorieren wir's bewusst, sonst
-			// gerueht der UI/DB-State auseinander.
 		});
 
 		editor.on("nodeSelected", (id) => {

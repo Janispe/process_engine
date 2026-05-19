@@ -62,13 +62,13 @@ frappe.ui.form.on("Prozess Version", {
 	},
 });
 
-// A4 + B-min: Live-Refresh bei Edit der Schritte / Kanten
+// Phase 9+: DAG wird aus schritt_io abgeleitet. schritt_kanten ist deprecated (hidden).
 // Add/Remove sind Parent-Form-Events (Frappe-Konvention), Field-Changes sind Child-Events.
 frappe.ui.form.on("Prozess Version", {
 	schritte_add: (frm) => _render_dag_preview(frm),
 	schritte_remove: (frm) => _render_dag_preview(frm),
-	schritt_kanten_add: (frm) => _render_dag_preview(frm),
-	schritt_kanten_remove: (frm) => _render_dag_preview(frm),
+	schritt_io_add: (frm) => _render_dag_preview(frm),
+	schritt_io_remove: (frm) => _render_dag_preview(frm),
 });
 
 frappe.ui.form.on("Prozess Schritt", {
@@ -76,9 +76,10 @@ frappe.ui.form.on("Prozess Schritt", {
 	step_key: (frm) => _render_dag_preview(frm),
 });
 
-frappe.ui.form.on("Prozess Schritt Kante", {
+frappe.ui.form.on("Prozess Schritt IO", {
 	step_key: (frm) => _render_dag_preview(frm),
-	depends_on_step_key: (frm) => _render_dag_preview(frm),
+	kind: (frm) => _render_dag_preview(frm),
+	target: (frm) => _render_dag_preview(frm),
 });
 
 function _open_duplicate_dialog(frm) {
@@ -141,45 +142,72 @@ function _open_activation_dialog(frm) {
 	});
 }
 
-function _validate_dag_locally(frm) {
-	const schritte = frm.doc.schritte || [];
-	const kanten = frm.doc.schritt_kanten || [];
+function _derive_deps_from_io(schritte, schritt_io) {
+	// Phase 9: DAG wird aus schritt_io abgeleitet (payload_input → Producer, step_input → target).
 	const step_keys = new Set(schritte.map((s) => (s.step_key || "").trim()).filter(Boolean));
-	const errors = [];
-
-	for (const k of kanten) {
-		const sk = (k.step_key || "").trim();
-		const dep = (k.depends_on_step_key || "").trim();
-		if (sk && dep && sk === dep) {
-			errors.push(__("Schritt kann nicht von sich selbst abhaengen: {0}", [sk]));
+	const producer_by_field = {};
+	for (const r of schritt_io) {
+		if ((r.kind || "") === "payload_output") {
+			const t = (r.target || "").trim();
+			if (t) producer_by_field[t] = (r.step_key || "").trim();
 		}
 	}
-	for (const k of kanten) {
-		const sk = (k.step_key || "").trim();
-		const dep = (k.depends_on_step_key || "").trim();
-		if (sk && !step_keys.has(sk)) errors.push(__("Kante referenziert unbekannten Schritt: {0}", [sk]));
-		if (dep && !step_keys.has(dep)) errors.push(__("Kante referenziert unbekannten Vorgaenger-Schritt: {0}", [dep]));
+	const deps_set_by_step = {};
+	for (const sk of step_keys) deps_set_by_step[sk] = new Set();
+	for (const r of schritt_io) {
+		const sk = (r.step_key || "").trim();
+		if (!step_keys.has(sk)) continue;
+		const kind = (r.kind || "").trim();
+		const target = (r.target || "").trim();
+		if (kind === "payload_input") {
+			const producer = producer_by_field[target];
+			if (producer && producer !== sk && step_keys.has(producer)) {
+				deps_set_by_step[sk].add(producer);
+			}
+		} else if (kind === "step_input") {
+			if (target && target !== sk && step_keys.has(target)) {
+				deps_set_by_step[sk].add(target);
+			}
+		}
 	}
-	const seen_edges = new Set();
-	for (const k of kanten) {
-		const sk = (k.step_key || "").trim();
-		const dep = (k.depends_on_step_key || "").trim();
-		if (!sk || !dep) continue;
-		const key = sk + "\0" + dep;
-		if (seen_edges.has(key)) errors.push(__("Doppelte Kante: {0} haengt mehrfach von {1} ab.", [sk, dep]));
-		seen_edges.add(key);
+	const deps_by_step = {};
+	for (const [sk, set] of Object.entries(deps_set_by_step)) {
+		deps_by_step[sk] = Array.from(set);
+	}
+	return { step_keys, deps_by_step, producer_by_field };
+}
+
+function _validate_dag_locally(frm) {
+	const schritte = frm.doc.schritte || [];
+	const schritt_io = frm.doc.schritt_io || [];
+	const { step_keys, deps_by_step, producer_by_field } = _derive_deps_from_io(schritte, schritt_io);
+	const errors = [];
+
+	// step_input: Self-Loop + unbekannter Target
+	for (const r of schritt_io) {
+		const sk = (r.step_key || "").trim();
+		const kind = (r.kind || "").trim();
+		const target = (r.target || "").trim();
+		if (!sk) continue;
+		if (kind === "step_input") {
+			if (sk === target) errors.push(__("Schritt kann nicht von sich selbst abhaengen: {0}", [sk]));
+			if (target && !step_keys.has(target)) {
+				errors.push(__("step_input referenziert unbekannten Schritt: {0} → {1}", [sk, target]));
+			}
+		}
+		if (kind === "payload_input" && target) {
+			const producer = producer_by_field[target];
+			if (!producer) {
+				errors.push(__("payload_input ohne Producer: {0} erwartet '{1}'.", [sk, target]));
+			} else if (producer === sk) {
+				errors.push(__("Schritt {0} liest seinen eigenen payload_output '{1}'.", [sk, target]));
+			}
+		}
 	}
 
 	// Cycle detection via DFS with coloring
 	const adj = {};
-	for (const sk of step_keys) adj[sk] = [];
-	for (const k of kanten) {
-		const sk = (k.step_key || "").trim();
-		const dep = (k.depends_on_step_key || "").trim();
-		if (sk && dep && step_keys.has(sk) && step_keys.has(dep)) {
-			adj[sk].push(dep);
-		}
-	}
+	for (const sk of step_keys) adj[sk] = (deps_by_step[sk] || []).slice();
 	const WHITE = 0, GRAY = 1, BLACK = 2;
 	const color = {};
 	for (const sk of step_keys) color[sk] = WHITE;
@@ -211,19 +239,12 @@ function _render_dag_preview(frm) {
 	const field = frm.get_field("dag_preview_html");
 	if (!field) return;
 	const schritte = frm.doc.schritte || [];
-	const kanten = frm.doc.schritt_kanten || [];
+	const schritt_io = frm.doc.schritt_io || [];
 	if (!schritte.length) {
 		field.$wrapper.html(`<p class="text-muted">${__("Noch keine Schritte definiert.")}</p>`);
 		return;
 	}
-	const deps_by_step = {};
-	for (const k of kanten) {
-		const sk = (k.step_key || "").trim();
-		const dep = (k.depends_on_step_key || "").trim();
-		if (!sk || !dep) continue;
-		deps_by_step[sk] = deps_by_step[sk] || [];
-		deps_by_step[sk].push(dep);
-	}
+	const { deps_by_step } = _derive_deps_from_io(schritte, schritt_io);
 	const errors = _validate_dag_locally(frm);
 	const errors_html = errors.length
 		? `<div class="alert alert-danger"><b>${__("Probleme:")}</b><ul>${errors
@@ -263,12 +284,12 @@ function _render_dag_preview(frm) {
 			pflicht: !!s.pflicht,
 		}))
 		.filter((n) => n.step_key);
-	const edges = kanten
-		.map((k) => ({
-			from: (k.depends_on_step_key || "").trim(),
-			to: (k.step_key || "").trim(),
-		}))
-		.filter((e) => e.from && e.to);
+	const edges = [];
+	for (const [sk, deps] of Object.entries(deps_by_step)) {
+		for (const dep of deps) {
+			if (sk && dep) edges.push({ from: dep, to: sk });
+		}
+	}
 	frappe.require("/assets/process_engine/js/dag_mermaid.js", () => {
 		const container = field.$wrapper.find(".dag-graph-container").get(0);
 		if (!container) return;
@@ -307,43 +328,48 @@ async function _render_visual_editor(frm) {
 			frappe.model.set_value(row.doctype, row.name, "editor_y", y);
 		},
 		on_create_edge(src, dst) {
-			// Aktuell nur step_done → step_input wird zur Save-Logik durchgereicht.
-			if (dst.kind === "step_input" && dst.target) {
-				const existing = (frm.doc.schritt_io || []).find(
-					(r) =>
-						(r.step_key || "").trim() === dst.step_key &&
-						(r.kind || "").trim() === "step_input" &&
-						(r.target || "").trim() === dst.target
-				);
-				if (existing) return;
-				const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
-				new_row.step_key = dst.step_key;
-				new_row.kind = "step_input";
-				new_row.target = dst.target;
-				frm.refresh_field("schritt_io");
-				frm.dirty();
-			}
+			if (frm.doc.is_active) return;
+			// dst.kind ist entweder "payload_input" oder "step_input" — beide erzeugen
+			// eine schritt_io-Zeile mit demselben Schema (step_key, kind, target).
+			if (!dst.kind || !dst.target || !dst.step_key) return;
+			const existing = (frm.doc.schritt_io || []).find(
+				(r) =>
+					(r.step_key || "").trim() === dst.step_key &&
+					(r.kind || "").trim() === dst.kind &&
+					(r.target || "").trim() === dst.target
+			);
+			if (existing) return;
+			const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+			new_row.step_key = dst.step_key;
+			new_row.kind = dst.kind;
+			new_row.target = dst.target;
+			frm.refresh_field("schritt_io");
+			frm.dirty();
+			_render_dag_preview(frm);
 		},
 		on_delete_edge(src, dst) {
-			if (dst.kind === "step_input" && dst.target) {
-				const remaining = (frm.doc.schritt_io || []).filter(
-					(r) =>
-						!(
-							(r.step_key || "").trim() === dst.step_key &&
-							(r.kind || "").trim() === "step_input" &&
-							(r.target || "").trim() === dst.target
-						)
-				);
-				frm.clear_table("schritt_io");
-				for (const r of remaining) {
-					const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
-					new_row.step_key = r.step_key;
-					new_row.kind = r.kind;
-					new_row.target = r.target;
-				}
-				frm.refresh_field("schritt_io");
-				frm.dirty();
+			if (frm.doc.is_active) return;
+			if (!dst.kind || !dst.target || !dst.step_key) return;
+			const before = frm.doc.schritt_io || [];
+			const remaining = before.filter(
+				(r) =>
+					!(
+						(r.step_key || "").trim() === dst.step_key &&
+						(r.kind || "").trim() === dst.kind &&
+						(r.target || "").trim() === dst.target
+					)
+			);
+			if (remaining.length === before.length) return;
+			frm.clear_table("schritt_io");
+			for (const r of remaining) {
+				const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+				new_row.step_key = r.step_key;
+				new_row.kind = r.kind;
+				new_row.target = r.target;
 			}
+			frm.refresh_field("schritt_io");
+			frm.dirty();
+			_render_dag_preview(frm);
 		},
 		on_select_node(step_key) {
 			_open_inspector(frm, inspector_el, step_key);
