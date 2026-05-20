@@ -12,14 +12,30 @@ from process_engine.process_engine.processes.task_registry import (
 )
 
 
-def _ensure_runtime_registered(runtime_doctype: str):
+def _ensure_runtime_registered(runtime_doctype: str, prozess_typ: str | None = None):
 	if get_process_runtime_config(runtime_doctype):
 		return
 	# Phase 8: Consumer-Apps registrieren ihre Domain-Runtimes via Hook
 	# `process_engine_runtimes`. Kein harter Domain-Import mehr in process_engine.
-	from process_engine.process_engine.processes import ensure_process_runtimes_registered
+	from process_engine.process_engine.processes import (
+		ensure_process_runtimes_registered,
+		get_runtime_config_for_typ,
+		register_process_runtime,
+	)
 
 	ensure_process_runtimes_registered()
+	if get_process_runtime_config(runtime_doctype):
+		return
+	# Phase 10: Die generische, datengetriebene Runtime (z.B. "Prozess Instanz") wird pro
+	# prozess_typ gebaut und ist NICHT ueber den Hook registriert (Instanz-Operationen
+	# nutzen ProcessEngine.for_instance ohne Registry). Damit eine Prozess Version aber
+	# ueber die Desk-UI gespeichert werden kann, registrieren wir die Runtime hier aus dem
+	# prozess_typ der Version — gleiches Muster wie die Migrations-Patches.
+	typ = (prozess_typ or "").strip()
+	if typ:
+		cfg = get_runtime_config_for_typ(typ)
+		if cfg:
+			register_process_runtime(cfg)
 
 
 _LOCKED_SCALAR_FIELDS = (
@@ -414,13 +430,13 @@ class ProzessVersion(Document):
 		runtime_doctype = (self.runtime_doctype or "").strip()
 		if not runtime_doctype:
 			frappe.throw(_("Runtime Doctype ist erforderlich."))
-		_ensure_runtime_registered(runtime_doctype)
+		_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
 		if not get_process_runtime_config(runtime_doctype):
 			frappe.throw(_("Kein Process Runtime fuer Doctype registriert: {0}").format(runtime_doctype))
 
 	def _get_runtime_config(self):
 		runtime_doctype = (self.runtime_doctype or "").strip()
-		_ensure_runtime_registered(runtime_doctype)
+		_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
 		config = get_process_runtime_config(runtime_doctype)
 		if not config:
 			frappe.throw(_("Kein Process Runtime fuer Doctype registriert: {0}").format(runtime_doctype))
@@ -563,6 +579,7 @@ def get_activation_preview(name: str) -> dict:
 		"schritt_count": len(doc.schritte or []),
 		"kanten_count": len(doc.schritt_kanten or []),
 		"runtime_doctype": doc.runtime_doctype,
+		"prozess_typ": filters.get("prozess_typ"),
 		"currently_active": currently_active[0] if currently_active else None,
 	}
 

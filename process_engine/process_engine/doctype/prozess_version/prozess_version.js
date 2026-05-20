@@ -132,9 +132,15 @@ function _open_activation_dialog(frm) {
 		args: { name: frm.doc.name },
 	}).then((r) => {
 		const p = r.message || {};
+		// Scope-Label: bei generischem Runtime-Doctype (Prozess Instanz) zusaetzlich den
+		// prozess_typ nennen — sonst suggeriert "keine Version aktiv" faelschlich, dass
+		// gar keine aktiv ist, obwohl ein ANDERER Prozess Typ eine aktive Version haben kann.
+		const scope = p.prozess_typ
+			? `${frappe.utils.escape_html(p.runtime_doctype || "")} / ${__("Prozess Typ")} ${frappe.utils.escape_html(p.prozess_typ)}`
+			: frappe.utils.escape_html(p.runtime_doctype || "");
 		const replaces = p.currently_active
 			? `<p>${__("Ersetzt aktuell aktive Version:")} <b>${frappe.utils.escape_html(p.currently_active.titel)}</b> (<code>${frappe.utils.escape_html(p.currently_active.version_key)}</code>)</p>`
-			: `<p>${__("Aktuell ist keine Version fuer")} <b>${frappe.utils.escape_html(p.runtime_doctype || "")}</b> ${__("aktiv.")}</p>`;
+			: `<p>${__("Aktuell ist keine Version fuer")} <b>${scope}</b> ${__("aktiv.")}</p>`;
 		const html = `
 			<h4>${frappe.utils.escape_html(p.version_titel || "")} <small class="text-muted">${frappe.utils.escape_html(p.version_key || "")}</small></h4>
 			<p>${__("Schritte:")} <b>${p.schritt_count || 0}</b>, ${__("Abhaengigkeiten:")} <b>${p.kanten_count || 0}</b></p>
