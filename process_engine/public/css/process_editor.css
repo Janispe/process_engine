@@ -105,6 +105,25 @@
 	border-color: #c0392b;
 }
 
+/* Toolbar auf gesperrten Versionen unter den Readonly-Banner schieben */
+.pe-toolbar.pe-toolbar-locked {
+	top: 38px;
+}
+
+/* konfig_json-Vorschau im Step-Inspector */
+.pe-konfig-pre {
+	font-size: 0.78em;
+	background: #f6f8fa;
+	border: 1px solid #e9ecef;
+	border-radius: 4px;
+	padding: 6px;
+	margin: 4px 0 6px 0;
+	max-height: 160px;
+	overflow: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
 .pe-inspector-section {
 	margin-bottom: 16px;
 }

@@ -27,6 +27,19 @@ frappe.ui.form.on("Prozess Version", {
 			frm.set_df_property(fname, "read_only", is_locked ? 1 : 0);
 		}
 
+		// Editor-only: die Child-Grids werden komplett ueber den visuellen Editor
+		// verwaltet (Schritte/I/O via Canvas+Inspector, Payload-Felder via "Felder"-Panel).
+		// Daten + Save bleiben unveraendert (hidden-Felder werden weiter persistiert).
+		for (const f of [
+			"payload_field_specs",
+			"schritte",
+			"schritt_io",
+			"section_payload_specs",
+			"section_schritt_io",
+		]) {
+			frm.set_df_property(f, "hidden", 1);
+		}
+
 		if (is_locked) {
 			frm.dashboard.clear_headline();
 			frm.dashboard.set_headline(
@@ -322,13 +335,12 @@ async function _render_visual_editor(frm) {
 	const is_locked = _is_version_locked(frm);
 	const $wrapper = field.$wrapper;
 	const shell_class = is_locked ? "pe-editor-shell pe-readonly" : "pe-editor-shell";
-	// Toolbar (absolut positioniertes Overlay) nur fuer editierbare Versionen.
-	const toolbar_html = is_locked
-		? ""
-		: `<div class="pe-toolbar">
-				<button class="btn btn-xs pe-add-step">+ ${__("Schritt")}</button>
-				<button class="btn btn-xs pe-manage-fields">${__("Felder")}</button>
-			</div>`;
+	// Toolbar als absolut positioniertes Overlay. Auf gesperrten Versionen bleibt nur
+	// der "Felder"-Button (read-only Panel zum Ansehen), unterhalb des Readonly-Banners.
+	const toolbar_html = `<div class="pe-toolbar${is_locked ? " pe-toolbar-locked" : ""}">
+			${is_locked ? "" : `<button class="btn btn-xs pe-add-step">+ ${__("Schritt")}</button>`}
+			<button class="btn btn-xs pe-manage-fields">${__("Felder")}</button>
+		</div>`;
 	$wrapper.html(`
 		<div class="${shell_class}" style="margin-top: ${is_locked ? "32px" : "0"};">
 			${toolbar_html}
@@ -339,9 +351,10 @@ async function _render_visual_editor(frm) {
 	const canvas = $wrapper.find(".pe-canvas").get(0);
 	const inspector_el = $wrapper.find(".pe-inspector").get(0);
 	if (!canvas || !inspector_el) return;
+	// "Felder"-Panel auch auf gesperrten Versionen (read-only); "+ Schritt" nur editierbar.
+	$wrapper.find(".pe-manage-fields").off("click").on("click", () => _open_fields_panel(frm, inspector_el));
 	if (!is_locked) {
 		$wrapper.find(".pe-add-step").off("click").on("click", () => _open_add_step_dialog(frm));
-		$wrapper.find(".pe-manage-fields").off("click").on("click", () => _open_fields_panel(frm, inspector_el));
 	}
 	await new Promise((r) => frappe.require("/assets/process_engine/js/process_editor.js", r));
 	await window.process_engine.editor.render({
@@ -581,7 +594,7 @@ function _open_inspector(frm, inspector_el, step_key) {
 			<h6>${__("Schritt")}</h6>
 			<div class="pe-kv"><b>step_key:</b> <code>${frappe.utils.escape_html(row.step_key || "")}</code></div>
 			<div class="pe-fields"></div>
-			${row.print_format ? `<div class="pe-kv"><b>print_format:</b> ${frappe.utils.escape_html(row.print_format)}</div>` : ""}
+			<div class="pe-konfig"></div>
 		</div>
 		<div class="pe-inspector-section">
 			<h6>${__("I/O")} (${io_rows.length})</h6>
@@ -590,7 +603,7 @@ function _open_inspector(frm, inspector_el, step_key) {
 		${
 			read_only
 				? `<div class="text-warning"><small>${__("Schreibgeschuetzt — Edit nur via 'Bearbeiten als neue Version'.")}</small></div>`
-				: `<div class="pe-inspector-section"><button class="btn btn-xs btn-default" data-action="open-grid">${__("Im Grid bearbeiten")}</button></div>`
+				: ""
 		}
 	`);
 	$inspector.addClass("pe-open");
@@ -600,28 +613,72 @@ function _open_inspector(frm, inspector_el, step_key) {
 	$inspector.find(".pe-inspector-delete").off("click").on("click", () => {
 		_delete_step(frm, inspector_el, step_key);
 	});
-	$inspector.find('[data-action="open-grid"]').off("click").on("click", () => {
-		// Scrollen zum Schritte-Grid und Row oeffnen
-		frm.scroll_to_field("schritte");
-		const grid = frm.get_field("schritte").grid;
-		if (grid && row.name) {
-			try {
-				grid.toggle_view(row.name, true);
-			} catch (e) {}
-		}
-	});
 
 	const fields_el = $inspector.find(".pe-fields").get(0);
+	const konfig_el = $inspector.find(".pe-konfig").get(0);
+	const _kv = (k, v) => (v ? `<div class="pe-kv"><b>${k}:</b> ${frappe.utils.escape_html(String(v))}</div>` : "");
 	if (read_only) {
 		$(fields_el).html(`
-			<div class="pe-kv"><b>task_type:</b> ${frappe.utils.escape_html(row.task_type || "")}</div>
+			${_kv("task_type", row.task_type)}
 			<div class="pe-kv"><b>pflicht:</b> ${row.pflicht ? "ja" : "nein"}</div>
-			<div class="pe-kv"><b>sichtbar:</b> ${frappe.utils.escape_html(row.sichtbar_fuer_prozess_typ || "")}</div>
-			${row.handler_key ? `<div class="pe-kv"><b>handler_key:</b> <code>${frappe.utils.escape_html(row.handler_key)}</code></div>` : ""}
+			${_kv("sichtbar", row.sichtbar_fuer_prozess_typ)}
+			${_kv("handler_key", row.handler_key)}
+			${_kv("dokument_typ_tag", row.dokument_typ_tag)}
+			${_kv("print_format", row.print_format)}
+			${_kv("verantwortlich_rolle", row.standard_verantwortlich_rolle)}
 		`);
+		$(konfig_el).html(
+			row.konfig_json && row.konfig_json.trim() !== "{}"
+				? `<div class="pe-kv"><b>konfig_json:</b></div><pre class="pe-konfig-pre">${frappe.utils.escape_html(row.konfig_json)}</pre>`
+				: ""
+		);
 	} else {
 		_render_inspector_fields(frm, inspector_el, row, fields_el);
+		_render_konfig_editor(frm, inspector_el, row, konfig_el);
 	}
+}
+
+// konfig_json (Task-Config, rohes JSON) via Dialog editieren — vermeidet das
+// unzuverlaessige Inline-Binding eines Code/Ace-Controls. Nach Stufe 0 ist konfig_json
+// die einzige Config-Quelle; _normalize_rows/validate_config greifen beim Save.
+function _render_konfig_editor(frm, inspector_el, row, container) {
+	const cur = (row.konfig_json || "").trim();
+	const preview = cur && cur !== "{}" ? cur : "{}";
+	$(container).html(`
+		<div class="pe-kv" style="margin-top:6px;"><b>${__("Konfig (JSON)")}</b></div>
+		<pre class="pe-konfig-pre">${frappe.utils.escape_html(preview)}</pre>
+		<button class="btn btn-xs btn-default pe-konfig-edit">${__("Konfig bearbeiten")}</button>
+	`);
+	$(container).find(".pe-konfig-edit").off("click").on("click", () => {
+		const d = new frappe.ui.Dialog({
+			title: __("Konfig (JSON): {0}", [row.step_key || ""]),
+			fields: [
+				{
+					fieldname: "konfig_json",
+					fieldtype: "Code",
+					label: __("Konfig JSON"),
+					options: "JSON",
+					default: cur || "{}",
+				},
+			],
+			primary_action_label: __("Übernehmen"),
+			primary_action(values) {
+				const raw = (values.konfig_json || "").trim() || "{}";
+				try {
+					JSON.parse(raw);
+				} catch (e) {
+					frappe.msgprint(__("Ungültiges JSON: {0}", [String(e)]));
+					return;
+				}
+				frappe.model.set_value(row.doctype, row.name, "konfig_json", raw);
+				frm.dirty();
+				d.hide();
+				// Vorschau aktualisieren (kein Canvas-Re-render noetig).
+				_render_konfig_editor(frm, inspector_el, row, container);
+			},
+		});
+		d.show();
+	});
 }
 
 // Phase 10 / Stufe 3: einfache Schrittfelder inline via make_control editierbar.
@@ -639,6 +696,11 @@ function _render_inspector_fields(frm, inspector_el, row, container) {
 		{ fieldname: "pflicht", fieldtype: "Check", label: __("Pflicht") },
 		{ fieldname: "sichtbar_fuer_prozess_typ", fieldtype: "Data", label: __("Sichtbar fuer Prozess-Typ") },
 		{ fieldname: "handler_key", fieldtype: "Data", label: __("Handler Key") },
+		{ fieldname: "reihenfolge", fieldtype: "Int", label: __("Reihenfolge") },
+		{ fieldname: "dokument_typ_tag", fieldtype: "Data", label: __("Dokument Typ Tag") },
+		{ fieldname: "print_format", fieldtype: "Link", label: __("Print Format"), options: "Print Format" },
+		{ fieldname: "standard_verantwortlich_rolle", fieldtype: "Link", label: __("Verantwortlich Rolle"), options: "Role" },
+		{ fieldname: "default_faelligkeit_tage", fieldtype: "Int", label: __("Faelligkeit (Tage)") },
 	];
 	for (const def of defs) {
 		const $col = $('<div class="pe-field" style="margin-bottom:8px;"></div>');
@@ -665,7 +727,7 @@ function _render_inspector_fields(frm, inspector_el, row, container) {
 		// — also nicht pro Tastendruck, kein Springen des Inspectors.
 		const _apply = () => {
 			let val = ctrl.get_value();
-			if (def.fieldtype === "Check") val = cint(val);
+			if (def.fieldtype === "Check" || def.fieldtype === "Int") val = cint(val);
 			frappe.model.set_value(row.doctype, row.name, def.fieldname, val);
 			frm.dirty();
 			if (def.fieldname === "titel" || def.fieldname === "task_type") {
@@ -779,6 +841,7 @@ function _open_fields_panel(frm, inspector_el) {
 				<div class="pe-kv"><b>fieldtype:</b> ${frappe.utils.escape_html(spec.fieldtype || "")}</div>
 				${spec.options ? `<div class="pe-kv"><b>options:</b> ${frappe.utils.escape_html(spec.options)}</div>` : ""}
 				<div class="pe-kv"><b>reqd:</b> ${spec.reqd ? "ja" : "nein"} · <b>list:</b> ${spec.in_list_view ? "ja" : "nein"}</div>
+				${spec.description ? `<div class="pe-kv"><b>description:</b> ${frappe.utils.escape_html(spec.description)}</div>` : ""}
 			`);
 		} else {
 			_render_field_spec_controls(frm, spec, ctrls_el);
@@ -795,6 +858,7 @@ function _render_field_spec_controls(frm, spec, container) {
 		{ fieldname: "options", fieldtype: "Small Text", label: __("Optionen (Link: DocType / Select: je Zeile)") },
 		{ fieldname: "reqd", fieldtype: "Check", label: __("Pflicht") },
 		{ fieldname: "in_list_view", fieldtype: "Check", label: __("In Liste") },
+		{ fieldname: "description", fieldtype: "Data", label: __("Beschreibung") },
 	];
 	for (const def of defs) {
 		const $col = $('<div class="pe-field" style="margin-bottom:6px;"></div>');
@@ -838,6 +902,7 @@ function _open_add_field_dialog(frm, inspector_el) {
 			},
 			{ fieldname: "reqd", fieldtype: "Check", label: __("Pflicht") },
 			{ fieldname: "in_list_view", fieldtype: "Check", label: __("In Liste anzeigen") },
+			{ fieldname: "description", fieldtype: "Small Text", label: __("Beschreibung (optional)") },
 		],
 		primary_action_label: __("Hinzufügen"),
 		primary_action(values) {
@@ -857,6 +922,7 @@ function _open_add_field_dialog(frm, inspector_el) {
 			row.options = (values.options || "").trim();
 			row.reqd = cint(values.reqd);
 			row.in_list_view = cint(values.in_list_view);
+			row.description = (values.description || "").trim();
 			frm.refresh_field("payload_field_specs");
 			frm.dirty();
 			d.hide();
