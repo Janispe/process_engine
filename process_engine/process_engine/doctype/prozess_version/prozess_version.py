@@ -65,6 +65,9 @@ class ProzessVersion(Document):
 		# Prozess Version (kein Snapshot mehr). Eine Version, die von mindestens einer
 		# Prozess Instanz referenziert wird, darf daher nicht geloescht werden — sonst
 		# verloeren laufende/abgeschlossene Instanzen ihre Config-Quelle.
+		# ANNAHME (wie in _resolve_runtime_task_config): nur der generische Runtime-Doctype
+		# "Prozess Instanz" wird geprueft — aktuell der einzige. Ein kuenftiger Consumer-
+		# Runtime mit eigenem Doctype braeuchte hier eine eigene Referenz-Pruefung.
 		count = frappe.db.count("Prozess Instanz", {"prozess_version": self.name})
 		if count:
 			frappe.throw(

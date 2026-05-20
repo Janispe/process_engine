@@ -97,13 +97,25 @@ def extract_task_config(step_or_task) -> dict:
 
 def _resolve_runtime_task_config(task_row) -> dict:
 	"""Loest die Config einer Laufzeit-Aufgabe live aus ihrer Prozess Version auf
-	(Instanz -> prozess_version -> Schritt nach step_key -> konfig_json). Gibt bei
-	fehlender Aufloesung {} zurueck (defensiv)."""
+	(Instanz -> prozess_version -> Schritt nach step_key -> konfig_json).
+
+	ANNAHME: nur der generische Runtime-Doctype "Prozess Instanz" wird unterstuetzt
+	(aktuell der einzige). Bei einem anderen, Consumer-spezifischen Runtime-Doctype
+	wird BEWUSST laut geworfen statt still {} zurueckzugeben — sonst verloeren dessen
+	Tasks unbemerkt ihre Config. Fehlt parent/step_key (z.B. unsaved Row), wird benigne
+	{} zurueckgegeben."""
 	parent = getattr(task_row, "parent", None)
-	parenttype = getattr(task_row, "parenttype", None)
+	parenttype = (getattr(task_row, "parenttype", None) or "").strip()
 	step_key = (getattr(task_row, "step_key", None) or "").strip()
-	if not (parent and parenttype == "Prozess Instanz" and step_key):
+	if not parent or not step_key:
 		return {}
+	if parenttype != "Prozess Instanz":
+		frappe.throw(
+			_(
+				"Live-Config-Aufloesung ist nur fuer den Runtime-Doctype 'Prozess Instanz' "
+				"implementiert, nicht fuer '{0}'."
+			).format(parenttype)
+		)
 	try:
 		instance = frappe.get_cached_doc("Prozess Instanz", parent)
 		version_name = (instance.get("prozess_version") or "").strip()
