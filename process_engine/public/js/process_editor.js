@@ -127,8 +127,9 @@
 		// Phase 10-Fix: ALLE payload_field_specs werden als input-Ports gerendert
 		// (Reihenfolge: alphabetisch). Aktive Ports = mit payload_input-Zeile in schritt_io,
 		// leere Ports = "open" (User kann drauf droppen, um neue payload_input-Zeile zu erzeugen).
-		// outputs bleiben "nur aktive Felder + generic step_done" — neuer payload_output
-		// kommt weiterhin ueber das Grid.
+		// outputs = aktive payload_outputs + generic step_done. Ein neuer payload_output
+		// (Producer) wird im Step-Inspector deklariert ("+ Output deklarieren") und erscheint
+		// danach hier als Output-Port.
 		const my_io = schritt_io.filter((r) => r.step_key === step_key);
 		const active_inputs = new Set(
 			my_io.filter((r) => r.kind === "payload_input").map((r) => r.target)
@@ -371,6 +372,11 @@
 			// data-step-key ermoeglicht In-place-Label-Updates aus dem Inspector
 			// (ohne kompletten Canvas-Re-render), siehe prozess_version.js.
 			if (info.step_key) node_el.setAttribute("data-step-key", info.step_key);
+			// Im fixed-Mode (read_only) feuert Drawflow kein nodeSelected — fuer das
+			// read-only Inspizieren gesperrter Versionen Node-Klick manuell verdrahten.
+			if (read_only && info.step_key && on_select_node) {
+				node_el.addEventListener("click", () => on_select_node(info.step_key));
+			}
 			if (info.step_key && !io_step_keys.has(info.step_key)) {
 				node_el.classList.add("pe-node-no-io");
 			}

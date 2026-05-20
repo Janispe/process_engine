@@ -577,10 +577,14 @@ function _open_inspector(frm, inspector_el, step_key) {
 	const io_rows = (frm.doc.schritt_io || []).filter((r) => (r.step_key || "").trim() === step_key);
 	const read_only = _is_version_locked(frm);
 	const io_list = io_rows
-		.map(
-			(r) =>
-				`<div class="pe-kv"><b>${frappe.utils.escape_html(r.kind)}</b> → <code>${frappe.utils.escape_html(r.target || "")}</code></div>`
-		)
+		.map((r) => {
+			const kind = (r.kind || "").trim();
+			const target = (r.target || "").trim();
+			const del = read_only
+				? ""
+				: `<button class="pe-io-del" data-kind="${frappe.utils.escape_html(kind)}" data-target="${frappe.utils.escape_html(target)}" title="${__("Entfernen")}">&times;</button>`;
+			return `<div class="pe-io-row"><span><b>${frappe.utils.escape_html(kind)}</b> → <code>${frappe.utils.escape_html(target)}</code></span>${del}</div>`;
+		})
 		.join("");
 	$inspector.html(`
 		<div class="pe-inspector-header">
@@ -599,6 +603,7 @@ function _open_inspector(frm, inspector_el, step_key) {
 		<div class="pe-inspector-section">
 			<h6>${__("I/O")} (${io_rows.length})</h6>
 			${io_list || `<div class="text-muted">${__("Keine I/O")}</div>`}
+			${read_only ? "" : `<button class="pe-add-output btn btn-xs" style="margin-top:6px;">+ ${__("Output deklarieren")}</button>`}
 		</div>
 		${
 			read_only
@@ -613,6 +618,10 @@ function _open_inspector(frm, inspector_el, step_key) {
 	$inspector.find(".pe-inspector-delete").off("click").on("click", () => {
 		_delete_step(frm, inspector_el, step_key);
 	});
+	$inspector.find(".pe-io-del").off("click").on("click", function () {
+		_remove_io_row(frm, step_key, $(this).attr("data-kind"), $(this).attr("data-target"));
+	});
+	$inspector.find(".pe-add-output").off("click").on("click", () => _open_add_output_dialog(frm, step_key));
 
 	const fields_el = $inspector.find(".pe-fields").get(0);
 	const konfig_el = $inspector.find(".pe-konfig").get(0);
@@ -767,6 +776,90 @@ function _patch_node_label(inspector_el, step_key, fieldname, val) {
 		$node.find(".pe-node-header strong").text(val || sk);
 	} else if (fieldname === "task_type") {
 		$node.find(".pe-node-header .pe-badge").text(val || "");
+	}
+}
+
+// Step-Inspector nach einem Canvas-Re-render (neuer .pe-inspector-DOM) wieder oeffnen.
+function _reopen_step_inspector(frm, step_key) {
+	const field = frm.get_field("editor_html");
+	const el = field && field.$wrapper.find(".pe-inspector").get(0);
+	if (el) _open_inspector(frm, el, step_key);
+}
+
+// payload_output (Producer) deklarieren — fehlte im Editor-only-Modus (Grid ausgeblendet).
+// Nur Felder ohne bestehenden Producer anbieten (Multi-Producer waere Server-Fehler).
+function _open_add_output_dialog(frm, step_key) {
+	const io = frm.doc.schritt_io || [];
+	const produced = new Set(
+		io.filter((r) => (r.kind || "").trim() === "payload_output").map((r) => (r.target || "").trim()).filter(Boolean)
+	);
+	const available = (frm.doc.payload_field_specs || [])
+		.map((s) => (s.fieldname || "").trim())
+		.filter(Boolean)
+		.filter((f) => !produced.has(f));
+	if (!available.length) {
+		frappe.msgprint(
+			__("Alle Payload-Felder haben bereits einen Producer. Erst ein neues Feld anlegen ('Felder').")
+		);
+		return;
+	}
+	const d = new frappe.ui.Dialog({
+		title: __("Output deklarieren: {0}", [step_key]),
+		fields: [
+			{
+				fieldname: "target",
+				fieldtype: "Select",
+				label: __("Payload-Feld (von diesem Schritt produziert)"),
+				reqd: 1,
+				options: available.join("\n"),
+				default: available[0],
+			},
+		],
+		primary_action_label: __("Deklarieren"),
+		primary_action(values) {
+			const target = (values.target || "").trim();
+			if (!target) return;
+			const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+			new_row.step_key = step_key;
+			new_row.kind = "payload_output";
+			new_row.target = target;
+			frm.refresh_field("schritt_io");
+			frm.dirty();
+			d.hide();
+			_render_dag_preview(frm);
+			_render_visual_editor(frm).then(() => _reopen_step_inspector(frm, step_key));
+		},
+	});
+	d.show();
+}
+
+// Beliebige I/O-Zeile entfernen. Bei payload_output Warnung (Consumer werden Process Inputs).
+function _remove_io_row(frm, step_key, kind, target) {
+	if (_is_version_locked(frm)) return;
+	const sk = (step_key || "").trim();
+	const k = (kind || "").trim();
+	const t = (target || "").trim();
+	const _do = () => {
+		frm.doc.schritt_io = (frm.doc.schritt_io || []).filter(
+			(r) => !((r.step_key || "").trim() === sk && (r.kind || "").trim() === k && (r.target || "").trim() === t)
+		);
+		frm.refresh_field("schritt_io");
+		frm.dirty();
+		_render_dag_preview(frm);
+		_render_visual_editor(frm).then(() => _reopen_step_inspector(frm, step_key));
+	};
+	if (k === "payload_output") {
+		const consumers = (frm.doc.schritt_io || [])
+			.filter((r) => (r.kind || "").trim() === "payload_input" && (r.target || "").trim() === t && (r.step_key || "").trim() !== sk)
+			.map((r) => (r.step_key || "").trim());
+		const warn = consumers.length
+			? `<p class="text-warning">${__("Consumer dieses Feldes werden danach als Process Input behandelt:")} ${consumers
+					.map((c) => `<code>${frappe.utils.escape_html(c)}</code>`)
+					.join(", ")}</p>`
+			: "";
+		frappe.confirm(`<p>${__("Output {0} entfernen?", [`<code>${frappe.utils.escape_html(t)}</code>`])}</p>${warn}`, _do);
+	} else {
+		_do();
 	}
 }
 

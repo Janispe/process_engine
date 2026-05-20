@@ -110,6 +110,27 @@
 	top: 38px;
 }
 
+/* I/O-Zeilen im Step-Inspector (mit Remove-Button) */
+.pe-io-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	font-size: 0.9em;
+	padding: 2px 0;
+}
+.pe-io-del {
+	border: none;
+	background: none;
+	color: #c0392b;
+	cursor: pointer;
+	font-size: 1.1em;
+	line-height: 1;
+	padding: 0 4px;
+}
+.pe-io-del:hover {
+	color: #a02216;
+}
+
 /* konfig_json-Vorschau im Step-Inspector */
 .pe-konfig-pre {
 	font-size: 0.78em;
