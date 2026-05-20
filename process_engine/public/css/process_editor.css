@@ -77,6 +77,34 @@
 	border-color: #c0392b;
 }
 
+/* Payload-Felder-Panel (Specs im Editor verwalten) */
+.pe-field-row {
+	border: 1px solid #e9ecef;
+	border-radius: 5px;
+	padding: 8px;
+	margin-bottom: 10px;
+	background: #fcfcfd;
+}
+.pe-field-row-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 6px;
+}
+.pe-field-row-head code {
+	font-size: 0.9em;
+	font-weight: 600;
+}
+.pe-field-del {
+	color: #c0392b;
+	border: 1px solid #f0c2bb;
+	background: #fdf3f2;
+}
+.pe-field-del:hover {
+	background: #f8d7da;
+	border-color: #c0392b;
+}
+
 .pe-inspector-section {
 	margin-bottom: 16px;
 }

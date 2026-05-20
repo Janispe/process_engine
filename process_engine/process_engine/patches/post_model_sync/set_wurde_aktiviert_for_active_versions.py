@@ -3,9 +3,10 @@
 Setzt das neue Lifecycle-Flag wurde_aktiviert=1 fuer alle aktuell aktiven
 Prozess-Versionen, damit der dauerhafte Lock ab sofort greift.
 
-Grenze: Versionen, die frueher aktiv waren und bereits deaktiviert wurden, sind
-nicht rueckwirkend erkennbar (es gibt keine Historie) und bleiben editierbar.
-Akzeptabel — laufende Instanzen sind durch ihren Config-Snapshot ohnehin geschuetzt.
+Deckt nur is_active=1 ab. Frueher aktive, inzwischen deaktivierte Versionen, die von
+einer Prozess Instanz referenziert werden, lockt der Folge-Patch
+set_wurde_aktiviert_for_referenced_versions — noetig, seit der Laufzeit-Config-Snapshot
+entfernt wurde (Instanzen lesen ihre Config nun live aus der Version, f9d2263).
 
 post_model_sync: laeuft NACH dem Schema-Sync, das Feld wurde_aktiviert existiert
 also bereits. Idempotent (set_value nur fuer noch nicht gesetzte Flags).

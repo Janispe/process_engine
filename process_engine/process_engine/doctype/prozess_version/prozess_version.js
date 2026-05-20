@@ -327,6 +327,7 @@ async function _render_visual_editor(frm) {
 		? ""
 		: `<div class="pe-toolbar">
 				<button class="btn btn-xs pe-add-step">+ ${__("Schritt")}</button>
+				<button class="btn btn-xs pe-manage-fields">${__("Felder")}</button>
 			</div>`;
 	$wrapper.html(`
 		<div class="${shell_class}" style="margin-top: ${is_locked ? "32px" : "0"};">
@@ -340,6 +341,7 @@ async function _render_visual_editor(frm) {
 	if (!canvas || !inspector_el) return;
 	if (!is_locked) {
 		$wrapper.find(".pe-add-step").off("click").on("click", () => _open_add_step_dialog(frm));
+		$wrapper.find(".pe-manage-fields").off("click").on("click", () => _open_fields_panel(frm, inspector_el));
 	}
 	await new Promise((r) => frappe.require("/assets/process_engine/js/process_editor.js", r));
 	await window.process_engine.editor.render({
@@ -704,4 +706,195 @@ function _patch_node_label(inspector_el, step_key, fieldname, val) {
 	} else if (fieldname === "task_type") {
 		$node.find(".pe-node-header .pe-badge").text(val || "");
 	}
+}
+
+// ==================== Phase 11: Payload-Felder im Editor ====================
+
+// Feld-Typen identisch zum Select in prozess_field_spec.json.
+function _pe_field_types() {
+	return [
+		"Data",
+		"Link",
+		"Date",
+		"Datetime",
+		"Int",
+		"Float",
+		"Currency",
+		"Check",
+		"Select",
+		"Small Text",
+		"Long Text",
+	];
+}
+
+// Panel im Inspector neu oeffnen, nachdem _render_visual_editor den .pe-inspector
+// neu aufgebaut hat (neues DOM-Element).
+function _reopen_fields_panel(frm) {
+	const field = frm.get_field("editor_html");
+	const el = field && field.$wrapper.find(".pe-inspector").get(0);
+	if (el) _open_fields_panel(frm, el);
+}
+
+function _open_fields_panel(frm, inspector_el) {
+	const $inspector = $(inspector_el);
+	const read_only = _is_version_locked(frm);
+	const specs = frm.doc.payload_field_specs || [];
+	$inspector.html(`
+		<div class="pe-inspector-header">
+			<strong>${__("Payload-Felder")} (${specs.length})</strong>
+			<span class="pe-inspector-actions">
+				${read_only ? "" : `<button class="pe-add-field btn btn-xs" title="${__("Feld hinzufügen")}">+ ${__("Feld")}</button>`}
+				<button class="pe-inspector-close" title="${__("Schliessen")}">&times;</button>
+			</span>
+		</div>
+		<div class="pe-fields-list"></div>
+		${read_only ? `<div class="text-warning"><small>${__("Schreibgeschuetzt — Edit nur via 'Bearbeiten als neue Version'.")}</small></div>` : ""}
+	`);
+	$inspector.addClass("pe-open");
+	$inspector.find(".pe-inspector-close").off("click").on("click", () => {
+		$inspector.removeClass("pe-open").empty();
+	});
+	$inspector.find(".pe-add-field").off("click").on("click", () => _open_add_field_dialog(frm, inspector_el));
+
+	const $list = $inspector.find(".pe-fields-list");
+	if (!specs.length) {
+		$list.html(`<div class="text-muted">${__("Noch keine Payload-Felder.")}</div>`);
+		return;
+	}
+	for (const spec of specs) {
+		const $row = $(`
+			<div class="pe-field-row">
+				<div class="pe-field-row-head">
+					<code>${frappe.utils.escape_html(spec.fieldname || "")}</code>
+					${read_only ? "" : `<button class="pe-field-del btn btn-xs" title="${__("Feld löschen")}">${__("Löschen")}</button>`}
+				</div>
+				<div class="pe-field-ctrls"></div>
+			</div>
+		`);
+		$list.append($row);
+		const ctrls_el = $row.find(".pe-field-ctrls").get(0);
+		if (read_only) {
+			$(ctrls_el).html(`
+				<div class="pe-kv"><b>label:</b> ${frappe.utils.escape_html(spec.label || "")}</div>
+				<div class="pe-kv"><b>fieldtype:</b> ${frappe.utils.escape_html(spec.fieldtype || "")}</div>
+				${spec.options ? `<div class="pe-kv"><b>options:</b> ${frappe.utils.escape_html(spec.options)}</div>` : ""}
+				<div class="pe-kv"><b>reqd:</b> ${spec.reqd ? "ja" : "nein"} · <b>list:</b> ${spec.in_list_view ? "ja" : "nein"}</div>
+			`);
+		} else {
+			_render_field_spec_controls(frm, spec, ctrls_el);
+			$row.find(".pe-field-del").off("click").on("click", () => _delete_field(frm, inspector_el, spec.fieldname));
+		}
+	}
+}
+
+// fieldname bewusst NICHT editierbar (String-FK in schritt_io.target) — Rename nur via Grid.
+function _render_field_spec_controls(frm, spec, container) {
+	const defs = [
+		{ fieldname: "label", fieldtype: "Data", label: __("Label") },
+		{ fieldname: "fieldtype", fieldtype: "Select", label: __("Feld-Typ"), options: _pe_field_types().join("\n") },
+		{ fieldname: "options", fieldtype: "Small Text", label: __("Optionen (Link: DocType / Select: je Zeile)") },
+		{ fieldname: "reqd", fieldtype: "Check", label: __("Pflicht") },
+		{ fieldname: "in_list_view", fieldtype: "Check", label: __("In Liste") },
+	];
+	for (const def of defs) {
+		const $col = $('<div class="pe-field" style="margin-bottom:6px;"></div>');
+		$(container).append($col);
+		const ctrl = frappe.ui.form.make_control({
+			df: { fieldname: def.fieldname, label: def.label, fieldtype: def.fieldtype, options: def.options || undefined },
+			parent: $col.get(0),
+			render_input: true,
+		});
+		if (def.fieldtype === "Check") ctrl.set_value(cint(spec[def.fieldname]));
+		else ctrl.set_value(spec[def.fieldname] || "");
+		// Edits an label/fieldtype/options/reqd aendern die Port-Menge NICHT (Ports = fieldname)
+		// -> kein Canvas-Re-render noetig, nur Modell + dirty.
+		const _apply = () => {
+			let val = ctrl.get_value();
+			if (def.fieldtype === "Check") val = cint(val);
+			frappe.model.set_value(spec.doctype, spec.name, def.fieldname, val);
+			frm.dirty();
+		};
+		if (ctrl.$input && ctrl.$input.length) ctrl.$input.on("change", _apply);
+		else ctrl.df.onchange = _apply;
+	}
+}
+
+function _open_add_field_dialog(frm, inspector_el) {
+	const existing = new Set(
+		(frm.doc.payload_field_specs || []).map((s) => (s.fieldname || "").trim()).filter(Boolean)
+	);
+	const d = new frappe.ui.Dialog({
+		title: __("Payload-Feld hinzufügen"),
+		fields: [
+			{ fieldname: "fieldname", fieldtype: "Data", label: __("Feldname (technisch)"), reqd: 1 },
+			{ fieldname: "label", fieldtype: "Data", label: __("Label"), reqd: 1 },
+			{ fieldname: "fieldtype", fieldtype: "Select", label: __("Feld-Typ"), reqd: 1, options: _pe_field_types().join("\n"), default: "Data" },
+			{
+				fieldname: "options",
+				fieldtype: "Small Text",
+				label: __("Optionen"),
+				description: __("Bei Link: Ziel-DocType. Bei Select: Optionen je Zeile."),
+				depends_on: "eval:['Link','Select'].includes(doc.fieldtype)",
+			},
+			{ fieldname: "reqd", fieldtype: "Check", label: __("Pflicht") },
+			{ fieldname: "in_list_view", fieldtype: "Check", label: __("In Liste anzeigen") },
+		],
+		primary_action_label: __("Hinzufügen"),
+		primary_action(values) {
+			const fn = (values.fieldname || "").trim();
+			if (!fn) {
+				frappe.msgprint(__("Feldname ist erforderlich."));
+				return;
+			}
+			if (existing.has(fn)) {
+				frappe.msgprint(__("Feldname ist bereits vergeben: {0}", [fn]));
+				return;
+			}
+			const row = frappe.model.add_child(frm.doc, "Prozess Field Spec", "payload_field_specs");
+			row.fieldname = fn;
+			row.label = (values.label || "").trim();
+			row.fieldtype = values.fieldtype || "Data";
+			row.options = (values.options || "").trim();
+			row.reqd = cint(values.reqd);
+			row.in_list_view = cint(values.in_list_view);
+			frm.refresh_field("payload_field_specs");
+			frm.dirty();
+			d.hide();
+			// Neues Feld -> neuer Port -> Canvas + DAG neu zeichnen, Panel neu oeffnen.
+			_render_dag_preview(frm);
+			_render_visual_editor(frm).then(() => _reopen_fields_panel(frm));
+		},
+	});
+	d.show();
+}
+
+function _delete_field(frm, inspector_el, fieldname) {
+	if (_is_version_locked(frm)) return;
+	const fn = (fieldname || "").trim();
+	if (!fn) return;
+	const io = frm.doc.schritt_io || [];
+	const _is_ref = (r) =>
+		["payload_input", "payload_output"].includes((r.kind || "").trim()) &&
+		(r.target || "").trim() === fn;
+	const refSteps = Array.from(new Set(io.filter(_is_ref).map((r) => (r.step_key || "").trim())));
+	let warn = "";
+	if (refSteps.length) {
+		warn = `<p class="text-warning"><b>${__("Achtung:")}</b> ${__(
+			"Folgende Schritte nutzen dieses Feld; ihre I/O-Verbindungen werden mit entfernt:"
+		)} ${refSteps.map((s) => `<code>${frappe.utils.escape_html(s)}</code>`).join(", ")}</p>`;
+	}
+	const msg = `<p>${__("Payload-Feld {0} wirklich loeschen?", [`<code>${frappe.utils.escape_html(fn)}</code>`])}</p>${warn}`;
+	frappe.confirm(msg, () => {
+		frm.doc.payload_field_specs = (frm.doc.payload_field_specs || []).filter(
+			(s) => (s.fieldname || "").trim() !== fn
+		);
+		// Cascade: referenzierende schritt_io-Zeilen mit-entfernen (sonst wirft
+		// _validate_schritt_io: target ist kein gueltiges payload_field_specs).
+		frm.doc.schritt_io = io.filter((r) => !_is_ref(r));
+		frm.refresh_field("payload_field_specs");
+		frm.refresh_field("schritt_io");
+		frm.dirty();
+		_render_dag_preview(frm);
+		_render_visual_editor(frm).then(() => _reopen_fields_panel(frm));
+	});
 }
