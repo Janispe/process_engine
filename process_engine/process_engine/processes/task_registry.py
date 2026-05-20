@@ -408,6 +408,19 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 
 	task_type = TASK_TYPE_CREATE_LINKED_DOC
 
+	def config_schema(self) -> dict | None:
+		# Stufe 2: target_doctype + store_in_payload_field als normale Controls; das
+		# eigentliche Feld-Mapping (welches Ziel-Feld woher: Input/Manuell/Fest) rendert der
+		# Editor ueber das doc_field_mapping-Widget. Kompiliert nach dialog_fields +
+		# prefill_mapping in konfig_json; Reverse-Parse beim Oeffnen.
+		return {
+			"fields": [
+				{"key": "target_doctype", "label": _("Ziel-Doctype"), "fieldtype": "Link", "options": "DocType", "reqd": 1},
+				{"key": "store_in_payload_field", "label": _("Ergebnis in Payload-Feld"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+				{"key": "doc_field_mapping", "label": _("Feld-Mapping"), "fieldtype": "Data", "widget": "doc_field_mapping"},
+			]
+		}
+
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
 		if not (config.get("target_doctype") or "").strip():

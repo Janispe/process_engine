@@ -686,11 +686,15 @@ function _render_konfig_editor(frm, inspector_el, row, container) {
 	});
 }
 
-// Rendert die Config-Felder eines Schemas (widget "control" | "payload_field_select")
-// als make_controls, bound an die konfig_json-Keys. (doc_field_mapping kommt in Stufe 2.)
+// Rendert die Config-Felder eines Schemas (widget "control" | "payload_field_select" |
+// "doc_field_mapping") als make_controls bzw. Widget, bound an die konfig_json-Keys.
 function _render_config_fields(frm, row, container, fields, cfg) {
 	for (const def of fields) {
 		const widget = def.widget || "control";
+		if (widget === "doc_field_mapping") {
+			_render_doc_field_mapping(frm, row, container, def, cfg);
+			continue;
+		}
 		const $col = $('<div class="pe-field" style="margin-bottom:6px;"></div>');
 		$(container).append($col);
 		let fieldtype = def.fieldtype || "Data";
@@ -720,6 +724,246 @@ function _render_config_fields(frm, row, container, fields, cfg) {
 		if (ctrl.$input && ctrl.$input.length) ctrl.$input.on("change", _apply);
 		else ctrl.df.onchange = _apply;
 	}
+}
+
+// ==================== Stufe 2: create_linked_doc doc_field_mapping ====================
+//
+// Pro Ziel-Feld des target_doctype waehlt der User die Quelle:
+//   - "input"  -> Wert kommt aus einem Payload-Feld  (prefill_mapping[fn] = "{{ payload.X }}")
+//   - "manual" -> User gibt zur Laufzeit ein          (Feld-Def landet in dialog_fields)
+//   - "fixed"  -> fester Literalwert                  (prefill_mapping[fn] = literal)
+//   - ""       -> nicht gesetzt
+// store_in_payload_field = Output-Payload-Feld. Kompiliert nach konfig_json; Reverse-Parse
+// beim Oeffnen. I/O-Kopplung: store_in_payload_field -> payload_output, jede input-Quelle ->
+// payload_input des Schritts (gemeinsamer Nenner).
+
+// Als Funktion statt top-level const: doctype-JS wird im selben Scope re-evaluiert
+// (new Function) -> ein top-level const wirft "already declared".
+function _pe_mapping_input_re() {
+	return /^\{\{\s*payload\.([A-Za-z0-9_]+)\s*\}\}$/;
+}
+
+// Welche Meta-Felder sind als Ziel sinnvoll setzbar?
+function _pe_is_settable_meta_field(df) {
+	const SKIP = new Set([
+		"Section Break", "Column Break", "Tab Break", "HTML", "Table", "Table MultiSelect",
+		"Button", "Heading", "Image", "Fold", "Geolocation", "Signature", "Barcode",
+	]);
+	if (!df || !df.fieldname) return false;
+	if (SKIP.has(df.fieldtype)) return false;
+	if (df.read_only || df.is_virtual || df.hidden) return false;
+	if (["naming_series", "amended_from"].includes(df.fieldname)) return false;
+	return true;
+}
+
+function _render_doc_field_mapping(frm, row, container, def, cfg) {
+	const $box = $('<div class="pe-field pe-mapping-box" style="margin-bottom:6px;"></div>');
+	$(container).append($box);
+	const locked = _is_version_locked(frm);
+	const render = () => {
+		const dfCount = Array.isArray(cfg.dialog_fields) ? cfg.dialog_fields.length : 0;
+		const pmCount =
+			cfg.prefill_mapping && typeof cfg.prefill_mapping === "object"
+				? Object.keys(cfg.prefill_mapping).length
+				: 0;
+		const target = (cfg.target_doctype || "").trim();
+		$box.html(`
+			<label class="control-label" style="font-size:0.85em;">${frappe.utils.escape_html(def.label || "Feld-Mapping")}</label>
+			<div class="pe-kv"><small class="text-muted">${
+				target
+					? __("{0} manuell, {1} vorbelegt", [dfCount, pmCount])
+					: __("Erst Ziel-Doctype waehlen")
+			}</small></div>
+			<button class="btn btn-xs pe-edit-mapping" ${locked ? "disabled" : ""}>${__("Feld-Mapping bearbeiten")}</button>
+		`);
+		$box.find(".pe-edit-mapping").off("click").on("click", () => _open_doc_field_mapping_dialog(frm, row, cfg, render));
+	};
+	render();
+}
+
+function _open_doc_field_mapping_dialog(frm, row, cfg, after) {
+	const target = (cfg.target_doctype || "").trim();
+	if (!target) {
+		frappe.msgprint(__("Bitte zuerst den Ziel-Doctype waehlen."));
+		return;
+	}
+	frappe.model.with_doctype(target, () => {
+		const meta = frappe.get_meta(target);
+		const metaFields = (meta && meta.fields ? meta.fields : []).filter(_pe_is_settable_meta_field);
+		const payloadFields = (frm.doc.payload_field_specs || [])
+			.map((s) => (s.fieldname || "").trim())
+			.filter(Boolean);
+
+		// Reverse-Parse vorhandene Konfig
+		const dialogByFn = {};
+		for (const f of cfg.dialog_fields || []) if (f && f.fieldname) dialogByFn[f.fieldname] = f;
+		const prefill = cfg.prefill_mapping && typeof cfg.prefill_mapping === "object" ? cfg.prefill_mapping : {};
+		const srcOf = (fn) => {
+			if (dialogByFn[fn]) return { src: "manual" };
+			if (fn in prefill) {
+				const m = String(prefill[fn]).match(_pe_mapping_input_re());
+				if (m) return { src: "input", payload: m[1] };
+				return { src: "fixed", literal: prefill[fn] };
+			}
+			return { src: "" };
+		};
+
+		// Reihen: Meta-Felder + verwaiste Mapping-Keys (nicht mehr im Doctype) zum Aufraeumen
+		const metaFns = new Set(metaFields.map((f) => f.fieldname));
+		const staleFns = [...new Set([...Object.keys(prefill), ...Object.keys(dialogByFn)])].filter((fn) => !metaFns.has(fn));
+		const rowDefs = metaFields
+			.map((df) => ({ df, stale: false }))
+			.concat(staleFns.map((fn) => ({ df: dialogByFn[fn] || { fieldname: fn, fieldtype: "Data", label: fn }, stale: true })));
+
+		const valueCell = (src, payload, literal) => {
+			if (src === "input") {
+				const opts = ['<option value="">—</option>']
+					.concat(
+						payloadFields.map(
+							(f) => `<option value="${frappe.utils.escape_html(f)}"${payload === f ? " selected" : ""}>${frappe.utils.escape_html(f)}</option>`
+						)
+					)
+					.join("");
+				return `<select class="form-control input-xs pe-val-input">${opts}</select>`;
+			}
+			if (src === "fixed") {
+				return `<input type="text" class="form-control input-xs pe-val-fixed" value="${frappe.utils.escape_html(literal != null ? literal : "")}">`;
+			}
+			return '<span class="text-muted">—</span>';
+		};
+
+		const srcSelect = (src) =>
+			`<select class="form-control input-xs pe-src">
+				<option value=""${src === "" ? " selected" : ""}>—</option>
+				<option value="input"${src === "input" ? " selected" : ""}>${__("Aus Payload")}</option>
+				<option value="manual"${src === "manual" ? " selected" : ""}>${__("Manuell")}</option>
+				<option value="fixed"${src === "fixed" ? " selected" : ""}>${__("Fest")}</option>
+			</select>`;
+
+		const trs = rowDefs
+			.map(({ df, stale }) => {
+				const cur = srcOf(df.fieldname);
+				const reqd = df.reqd ? ' <span class="text-danger">*</span>' : "";
+				const staleNote = stale ? ` <span class="text-warning" title="${__("Nicht (mehr) im Ziel-Doctype")}">⚠</span>` : "";
+				const typeNote = `<span class="text-muted">${frappe.utils.escape_html(df.fieldtype || "")}</span>`;
+				return `<tr data-fn="${frappe.utils.escape_html(df.fieldname)}" data-fielddef="${frappe.utils.escape_html(JSON.stringify(_pe_manual_fielddef(df, dialogByFn)))}">
+					<td><div>${frappe.utils.escape_html(df.label || df.fieldname)}${reqd}${staleNote}</div><code style="font-size:0.85em;">${frappe.utils.escape_html(df.fieldname)}</code> ${typeNote}</td>
+					<td style="width:130px;">${srcSelect(cur.src)}</td>
+					<td class="pe-val" style="width:200px;">${valueCell(cur.src, cur.payload, cur.literal)}</td>
+				</tr>`;
+			})
+			.join("");
+
+		const d = new frappe.ui.Dialog({
+			title: __("Feld-Mapping: {0}", [target]),
+			size: "large",
+			fields: [
+				{
+					fieldname: "mapping_html",
+					fieldtype: "HTML",
+					options: `
+						<table class="table table-bordered" style="font-size:0.9em;">
+							<thead><tr>
+								<th>${__("Ziel-Feld")}</th><th>${__("Quelle")}</th><th>${__("Wert")}</th>
+							</tr></thead>
+							<tbody class="pe-mapping-tbody">${trs}</tbody>
+						</table>
+						<p class="text-muted"><small>${__("Aus Payload: Wert kommt aus einem Payload-Feld. Manuell: zur Laufzeit eingeben. Fest: fester Wert.")}</small></p>
+					`,
+				},
+			],
+			primary_action_label: __("Uebernehmen"),
+			primary_action() {
+				const $body = d.fields_dict.mapping_html.$wrapper;
+				// Bestehende Vorbelegung merken: ein Manuell-Feld kann zugleich eine
+				// Payload-/Fest-Vorbelegung als Default haben (das einfache 3-Quellen-Modell
+				// bildet das nicht ab). Damit der Round-Trip nicht-verlustig bleibt, erhalten
+				// Manuell-Felder ihre bestehende prefill-Eintragung. Exotische Hybride bleiben
+				// ueber den JSON-Fallback voll editierbar.
+				const origPrefill =
+					cfg.prefill_mapping && typeof cfg.prefill_mapping === "object"
+						? Object.assign({}, cfg.prefill_mapping)
+						: {};
+				const dialog_fields = [];
+				const prefill_mapping = {};
+				$body.find("tr[data-fn]").each(function () {
+					const $tr = $(this);
+					const fn = $tr.attr("data-fn");
+					const src = $tr.find(".pe-src").val();
+					if (src === "manual") {
+						try {
+							dialog_fields.push(JSON.parse($tr.attr("data-fielddef")));
+						} catch (e) {
+							// ignore malformed
+						}
+						if (fn in origPrefill) prefill_mapping[fn] = origPrefill[fn];
+					} else if (src === "input") {
+						const pf = $tr.find(".pe-val-input").val();
+						if (pf) prefill_mapping[fn] = `{{ payload.${pf} }}`;
+					} else if (src === "fixed") {
+						const lit = $tr.find(".pe-val-fixed").val();
+						if (lit !== "" && lit != null) prefill_mapping[fn] = lit;
+					}
+				});
+				cfg.dialog_fields = dialog_fields;
+				cfg.prefill_mapping = prefill_mapping;
+				frappe.model.set_value(row.doctype, row.name, "konfig_json", JSON.stringify(cfg));
+				frm.dirty();
+				_sync_create_linked_io(frm, row.step_key, cfg);
+				d.hide();
+				if (after) after();
+			},
+		});
+		d.show();
+
+		// Quelle-Wechsel -> Wert-Zelle neu rendern
+		d.fields_dict.mapping_html.$wrapper.on("change", ".pe-src", function () {
+			const $tr = $(this).closest("tr");
+			$tr.find(".pe-val").html(valueCell($(this).val(), null, null));
+		});
+	});
+}
+
+// Feld-Def fuer dialog_fields (Manuell): vorhandene Def bevorzugen (erhaelt Custom-Props wie
+// read_only/reqd), sonst aus Meta ableiten.
+function _pe_manual_fielddef(df, dialogByFn) {
+	if (dialogByFn && dialogByFn[df.fieldname]) return dialogByFn[df.fieldname];
+	const out = { fieldname: df.fieldname, fieldtype: df.fieldtype || "Data", label: df.label || df.fieldname };
+	if (df.options) out.options = df.options;
+	if (df.reqd) out.reqd = 1;
+	return out;
+}
+
+// I/O-Kopplung: payload_output = store_in_payload_field; payload_input = jede input-Quelle.
+// Reconciliet NUR payload_* dieses Schritts (step_input/Sequencing bleibt unangetastet).
+function _sync_create_linked_io(frm, step_key, cfg) {
+	const sk = (step_key || "").trim();
+	if (!sk) return;
+	const out = (cfg.store_in_payload_field || "").trim();
+	const ins = [];
+	const prefill = cfg.prefill_mapping && typeof cfg.prefill_mapping === "object" ? cfg.prefill_mapping : {};
+	for (const val of Object.values(prefill)) {
+		const m = String(val).match(_pe_mapping_input_re());
+		if (m) ins.push(m[1]);
+	}
+	frm.doc.schritt_io = (frm.doc.schritt_io || []).filter(
+		(r) => !((r.step_key || "").trim() === sk && ["payload_output", "payload_input"].includes((r.kind || "").trim()))
+	);
+	if (out) {
+		const r = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+		r.step_key = sk;
+		r.kind = "payload_output";
+		r.target = out;
+	}
+	for (const f of [...new Set(ins)]) {
+		const r = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+		r.step_key = sk;
+		r.kind = "payload_input";
+		r.target = f;
+	}
+	frm.refresh_field("schritt_io");
+	_render_dag_preview(frm);
+	_render_visual_editor(frm).then(() => _reopen_step_inspector(frm, sk));
 }
 
 // Permanenter Fallback/Escape Hatch: rohes konfig_json im Code-Dialog.
