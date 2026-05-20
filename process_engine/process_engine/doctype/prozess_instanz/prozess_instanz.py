@@ -149,14 +149,16 @@ def _instance_lock_reason(doc) -> str:
 
 def _apply_action_gates(engine, doc, row, descriptor: dict, instance_lock_reason: str) -> tuple[bool, str]:
 	"""Berechnet (disabled, reason) fuer eine Action — gleiche Logik fuer Anzeige (Batch)
-	und Ausfuehrung. Handler-eigenes disabled hat Vorrang; danach Instanz-Lock, dann
-	Vorgaenger-Lock. `ignore_lock`-Actions (z.B. Wieder oeffnen) ueberspringen die Locks."""
+	und Ausfuehrung. Reihenfolge: (1) Handler-eigenes disabled, (2) Instanz-Lock
+	(abgeschlossen/eingereicht) gilt fuer ALLE Actions, (3) `ignore_lock` ueberspringt nur
+	den Task-Vorgaenger-Lock (z.B. Wieder oeffnen), (4) Vorgaenger-Lock. ignore_lock darf den
+	Instanz-Lock NICHT umgehen — sonst liesse sich z.B. eine abgeschlossene Instanz reopen-en."""
 	if descriptor.get("disabled"):
 		return True, (descriptor.get("reason") or _("Aktion ist derzeit nicht erlaubt."))
-	if descriptor.get("ignore_lock"):
-		return False, ""
 	if instance_lock_reason:
 		return True, instance_lock_reason
+	if descriptor.get("ignore_lock"):
+		return False, ""
 	if bool(getattr(row, "pflicht", 0)) and not engine._is_task_unlocked(doc, row):
 		return True, _("Vorgaenger noch nicht freigegeben.")
 	return False, ""

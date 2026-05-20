@@ -720,6 +720,13 @@ function _render_config_fields(frm, row, container, fields, cfg) {
 			cfg[def.key] = val;
 			frappe.model.set_value(row.doctype, row.name, "konfig_json", JSON.stringify(cfg));
 			frm.dirty();
+			// create_linked_doc: store_in_payload_field ist das Output-Feld. Wird es ueber
+			// dieses Control (ohne den Mapping-Dialog) gesetzt/geaendert, sofort die
+			// payload_output-IO-Zeile koppeln — sonst fehlt sie und der Server blockt beim
+			// Save (payload_output ist Pflicht fuer create_linked_doc).
+			if (row.task_type === "create_linked_doc" && def.key === "store_in_payload_field") {
+				_sync_create_linked_io(frm, row.step_key, cfg);
+			}
 		};
 		if (ctrl.$input && ctrl.$input.length) ctrl.$input.on("change", _apply);
 		else ctrl.df.onchange = _apply;
