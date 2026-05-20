@@ -1,7 +1,9 @@
 [pre_model_sync]
+process_engine.process_engine.patches.pre_model_sync.preserve_konfig_json_before_config_drop
 
 [post_model_sync]
 process_engine.process_engine.patches.post_model_sync.migrate_doctype_modules
 process_engine.process_engine.patches.post_model_sync.mark_legacy_engine_patches_executed
 process_engine.process_engine.patches.post_model_sync.move_payload_specs_to_version
 process_engine.process_engine.patches.post_model_sync.migrate_to_explicit_io
+process_engine.process_engine.patches.post_model_sync.set_wurde_aktiviert_for_active_versions

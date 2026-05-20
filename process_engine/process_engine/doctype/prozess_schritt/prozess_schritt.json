@@ -19,7 +19,6 @@
   "mapping_flag",
   "dokument_typ_tag",
   "print_format",
-  "config_json",
   "konfig_json",
   "standard_verantwortlich_rolle",
   "default_faelligkeit_tage",
@@ -118,13 +117,6 @@
    "fieldtype": "Link",
    "label": "Print Format",
    "options": "Print Format"
-  },
-  {
-   "fieldname": "config_json",
-   "fieldtype": "Code",
-   "hidden": 1,
-   "label": "Config JSON",
-   "options": "JSON"
   },
   {
    "fieldname": "konfig_json",

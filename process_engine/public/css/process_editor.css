@@ -11,7 +11,7 @@
 }
 
 .pe-editor-shell.pe-readonly::before {
-	content: "Aktive Version — schreibgeschuetzt. Aenderungen erfordern eine neue Version.";
+	content: "Schreibgeschuetzt — Aenderungen erfordern eine neue Version.";
 	position: absolute;
 	top: 0;
 	left: 0;
@@ -62,6 +62,20 @@
 .pe-inspector-close:hover {
 	color: #000;
 }
+.pe-inspector-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.pe-inspector-delete {
+	color: #c0392b;
+	border: 1px solid #f0c2bb;
+	background: #fdf3f2;
+}
+.pe-inspector-delete:hover {
+	background: #f8d7da;
+	border-color: #c0392b;
+}
 
 .pe-inspector-section {
 	margin-bottom: 16px;
@@ -92,6 +106,13 @@
 .drawflow .drawflow-node.pe-node.selected {
 	border-color: #1976d2;
 	box-shadow: 0 1px 4px rgba(25, 118, 210, 0.3);
+}
+/* Schritt ohne jegliche I/O-Deklaration — visueller Hinweis, dass noch verdrahtet
+   werden muss (Servervalidierung verlangt I/O fuer Versionen mit Schritten). */
+.drawflow .drawflow-node.pe-node.pe-node-no-io {
+	border-style: dashed;
+	border-color: #e0a800;
+	background: #fffdf5;
 }
 
 .pe-node-body {
@@ -165,7 +186,7 @@
 .pe-toolbar {
 	position: absolute;
 	top: 8px;
-	right: 8px;
+	left: 8px;
 	z-index: 5;
 	background: rgba(255, 255, 255, 0.9);
 	border: 1px solid #d1d8dd;

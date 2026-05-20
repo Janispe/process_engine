@@ -79,6 +79,13 @@ class TestProzessInstanzSmoke(FrappeTestCase):
 					"prozess_typ": typ_name,
 					"runtime_doctype": "Prozess Instanz",
 					"is_active": 1,
+					"payload_field_specs": [
+						{
+							"fieldname": "smoke_input",
+							"label": "Smoke Input",
+							"fieldtype": "Data",
+						}
+					],
 					"schritte": [
 						{
 							"step_key": "step_a",
@@ -87,6 +94,13 @@ class TestProzessInstanzSmoke(FrappeTestCase):
 							"task_type": "manual_check",
 							"sichtbar_fuer_prozess_typ": "Beide",
 							"reihenfolge": 10,
+						}
+					],
+					"schritt_io": [
+						{
+							"step_key": "step_a",
+							"kind": "payload_input",
+							"target": "smoke_input",
 						}
 					],
 				}

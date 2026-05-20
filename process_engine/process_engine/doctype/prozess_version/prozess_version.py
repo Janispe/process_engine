@@ -56,6 +56,15 @@ class ProzessVersion(Document):
 			return
 		was_active = bool(before.get("is_active"))
 		is_active_now = bool(self.is_active)
+		# Phase 10: dauerhafter Content-Lock ab erster Aktivierung. wurde_aktiviert
+		# wird nie zurueckgesetzt — eine einmal aktivierte Version bleibt eingefroren,
+		# auch nachdem sie wieder deaktiviert wurde.
+		was_ever_active = bool(before.get("wurde_aktiviert"))
+		# Monotonie erzwingen: wurde_aktiviert darf nie 1 -> 0 zurueck. Das Feld ist nur
+		# UI-readonly; ein API-/Script-Save koennte es sonst (ohne Content-Diff) auf 0
+		# setzen und eine ehemals aktive Version wieder editierbar machen. Re-asserten.
+		if was_ever_active and not self.wurde_aktiviert:
+			self.wurde_aktiviert = 1
 		diffs = self._compute_content_diffs(before)
 
 		# Fall 1: Aktivierungs-Uebergang (0 -> 1) muss separat von Content-Edits sein
@@ -67,6 +76,9 @@ class ProzessVersion(Document):
 						"[{0}] speichern, dann in einem zweiten Save aktivieren."
 					).format(", ".join(diffs))
 				)
+			# Lifecycle-Flag im normalen Save-Flow setzen (kein db_set in validate).
+			# Der direkte DB-Pfad activate_version sichert das zusaetzlich ab.
+			self.wurde_aktiviert = 1
 			return
 
 		# Fall 2: Deaktivierungs-Uebergang (1 -> 0) muss separat von Content-Edits sein.
@@ -82,16 +94,17 @@ class ProzessVersion(Document):
 				)
 			return
 
-		# Fall 3: bleibt inaktiv (0 -> 0)
-		if not was_active and not is_active_now:
+		# Ab hier: kein is_active-Uebergang (0->0 oder 1->1).
+		# Content-Lock greift dauerhaft, sobald die Version jemals aktiviert war
+		# (was_ever_active) ODER aktuell aktiv ist. Ein nie aktiviert gewesener
+		# Entwurf bleibt frei editierbar.
+		if not (was_ever_active or is_active_now):
 			return
-
-		# Fall 4: bleibt aktiv (1 -> 1) Content-Lock greift
 		if not diffs:
 			return
 		frappe.throw(
 			_(
-				"Aktive Prozess-Versionen sind schreibgeschuetzt. "
+				"Aktivierte Prozess-Versionen sind dauerhaft schreibgeschuetzt. "
 				"Aenderungen an [{0}] sind nur via 'Bearbeiten als neue Version' moeglich."
 			).format(", ".join(diffs))
 		)
@@ -146,9 +159,10 @@ class ProzessVersion(Document):
 
 	@staticmethod
 	def _schritte_fingerprint(doc) -> tuple:
-		"""Fingerprint nimmt RAW-Source-Felder, NICHT das von _normalize_rows
-		abgeleitete config_json. Begruendung: _enforce_active_immutability laeuft
-		VOR _normalize_rows, config_json ist daher im aktuellen Save noch stale.
+		"""Fingerprint nimmt RAW-Source-Felder. konfig_json ist seit Phase 10 die
+		einzige Config-Quelle auf der Vorlage (config_json wurde entfernt); es wird
+		von _normalize_rows normalisiert, der Fingerprint laeuft aber VOR der
+		Normalisierung und vergleicht damit konsistent gespeicherten vs. neuen Wert.
 		Wenn ein neues Source-Feld auf Prozess Schritt ergaenzt wird, muss es hier mit."""
 		rows = []
 		for s in doc.get("schritte") or []:
@@ -424,8 +438,9 @@ class ProzessVersion(Document):
 				row.step_key = f"step_{idx:02d}"
 			if not (row.task_type or "").strip():
 				row.task_type = TASK_TYPE_MANUAL_CHECK
-			row.config_json = dump_task_config(extract_task_config(row))
-			row.konfig_json = row.config_json
+			# Phase 10: konfig_json ist die einzige Config-Quelle auf der Vorlage
+			# (config_json wurde entfernt). extract_task_config liest jetzt konfig_json.
+			row.konfig_json = dump_task_config(extract_task_config(row))
 			step_key = (row.step_key or "").strip()
 			if step_key in seen_keys:
 				frappe.throw(_("Step Key ist doppelt: {0}").format(step_key))
@@ -486,15 +501,29 @@ class ProzessVersion(Document):
 	def _validate_active_uniqueness(self) -> None:
 		if not self.is_active:
 			return
-		filters = {
-			"name": ("!=", self.name or ""),
-			"is_active": 1,
-			"runtime_doctype": (self.runtime_doctype or "").strip(),
-		}
+		filters = _active_version_scope_filters(self)
+		filters["name"] = ("!=", self.name or "")
 		if frappe.db.exists("Prozess Version", filters):
+			scope = self.runtime_doctype
+			if filters.get("prozess_typ"):
+				scope = _("{0} / Prozess Typ {1}").format(self.runtime_doctype, filters["prozess_typ"])
 			frappe.throw(
-				_("Es darf nur eine aktive Prozessversion fuer {0} geben.").format(self.runtime_doctype)
+				_("Es darf nur eine aktive Prozessversion fuer {0} geben.").format(scope)
 			)
+
+
+def _active_version_scope_filters(doc) -> dict:
+	filters = {
+		"is_active": 1,
+		"runtime_doctype": (doc.get("runtime_doctype") or "").strip(),
+	}
+	# Prozess Instanz ist ein generischer Runtime-Doctype; die Engine waehlt aktive
+	# Versionen zusaetzlich pro Prozess Typ aus (process_typ_filter).
+	if filters["runtime_doctype"] == "Prozess Instanz":
+		prozess_typ = (doc.get("prozess_typ") or "").strip()
+		if prozess_typ:
+			filters["prozess_typ"] = prozess_typ
+	return filters
 
 
 @frappe.whitelist()
@@ -503,6 +532,10 @@ def duplicate_version(name: str, new_version_key: str | None = None, new_titel: 
 	src.check_permission("read")
 	new_doc = frappe.copy_doc(src)
 	new_doc.is_active = 0
+	# Lifecycle-Flag MUSS zuruecksetzen — sonst erbt die Kopie einer jemals aktiven
+	# Version den dauerhaften Content-Lock und "Bearbeiten als neue Version" liefert
+	# eine sofort gesperrte (uneditierbare) Kopie. (Feld ist zusaetzlich no_copy.)
+	new_doc.wurde_aktiviert = 0
 	new_doc.gueltig_ab = None
 	new_doc.gueltig_bis = None
 	new_doc.version_key = (new_version_key or "").strip() or f"{src.version_key}-copy"
@@ -515,13 +548,11 @@ def duplicate_version(name: str, new_version_key: str | None = None, new_titel: 
 def get_activation_preview(name: str) -> dict:
 	doc = frappe.get_doc("Prozess Version", name)
 	doc.check_permission("read")
+	filters = _active_version_scope_filters(doc)
+	filters["name"] = ("!=", doc.name)
 	currently_active = frappe.get_all(
 		"Prozess Version",
-		filters={
-			"is_active": 1,
-			"runtime_doctype": (doc.runtime_doctype or "").strip(),
-			"name": ("!=", doc.name),
-		},
+		filters=filters,
 		fields=["name", "titel", "version_key"],
 		limit=1,
 	)
@@ -540,17 +571,18 @@ def get_activation_preview(name: str) -> dict:
 def activate_version(name: str) -> str:
 	doc = frappe.get_doc("Prozess Version", name)
 	doc.check_permission("write")
+	filters = _active_version_scope_filters(doc)
+	filters["name"] = ("!=", doc.name)
 	others = frappe.get_all(
 		"Prozess Version",
-		filters={
-			"is_active": 1,
-			"runtime_doctype": (doc.runtime_doctype or "").strip(),
-			"name": ("!=", doc.name),
-		},
+		filters=filters,
 		pluck="name",
 	)
 	for nm in others:
 		frappe.db.set_value("Prozess Version", nm, "is_active", 0, update_modified=False)
 	if not doc.is_active:
 		doc.db_set("is_active", 1, update_modified=False)
+	# Lifecycle-Flag dauerhaft setzen (dieser direkte DB-Pfad umgeht validate).
+	if not doc.wurde_aktiviert:
+		doc.db_set("wurde_aktiviert", 1, update_modified=False)
 	return doc.name

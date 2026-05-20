@@ -11,6 +11,7 @@
   "version_key",
   "titel",
   "is_active",
+  "wurde_aktiviert",
   "gueltig_ab",
   "gueltig_bis",
   "beschreibung",
@@ -65,6 +66,15 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Aktiv"
+  },
+  {
+   "default": "0",
+   "description": "Lifecycle-Flag: 1 sobald die Version mindestens einmal aktiviert wurde. Ab dann sind die Inhalte dauerhaft eingefroren (Bearbeitung nur via 'Bearbeiten als neue Version'). Wird nie zurueckgesetzt. KEIN Teil des Content-Locks/Fingerprints. no_copy: eine Kopie startet immer als unaktivierter Entwurf.",
+   "fieldname": "wurde_aktiviert",
+   "fieldtype": "Check",
+   "label": "Wurde aktiviert",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fieldname": "gueltig_ab",

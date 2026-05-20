@@ -300,8 +300,13 @@
 				html
 			);
 			node_id_by_step[sk] = id;
-			node_port_meta_for_styling[id] = { active_inputs, payload_outputs };
+			node_port_meta_for_styling[id] = { active_inputs, payload_outputs, step_key: sk };
 		}
+
+		// Schritte ohne jegliche I/O-Deklaration markieren (visueller "verdrahten"-Hinweis).
+		const io_step_keys = new Set(
+			schritt_io.map((r) => (r.step_key || "").trim()).filter(Boolean)
+		);
 
 		// 3. Edges aus schritt_io ableiten
 		const producer_by_field = {};
@@ -363,6 +368,12 @@
 		for (const [id, info] of Object.entries(node_port_meta_for_styling)) {
 			const node_el = container.querySelector(`#node-${id}`);
 			if (!node_el) continue;
+			// data-step-key ermoeglicht In-place-Label-Updates aus dem Inspector
+			// (ohne kompletten Canvas-Re-render), siehe prozess_version.js.
+			if (info.step_key) node_el.setAttribute("data-step-key", info.step_key);
+			if (info.step_key && !io_step_keys.has(info.step_key)) {
+				node_el.classList.add("pe-node-no-io");
+			}
 			const input_divs = node_el.querySelectorAll(".inputs > .input");
 			input_divs.forEach((el, i) => {
 				if (i < all_input_fields.length) {

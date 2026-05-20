@@ -20,25 +20,28 @@ frappe.ui.form.on("Prozess Version", {
 			"schritt_kanten",
 		];
 
-		if (frm.doc.is_active) {
-			// A2: aktive Version visuell sperren (Server-Lock in A1 ist source of truth)
-			for (const fname of locked_fields) {
-				frm.set_df_property(fname, "read_only", 1);
-			}
+		// Phase 10: dauerhafter Content-Lock ab erster Aktivierung — Editierbarkeit
+		// haengt am gemeinsamen Praedikat _is_version_locked, nicht mehr nur an is_active.
+		const is_locked = _is_version_locked(frm);
+		for (const fname of locked_fields) {
+			frm.set_df_property(fname, "read_only", is_locked ? 1 : 0);
+		}
+
+		if (is_locked) {
 			frm.dashboard.clear_headline();
 			frm.dashboard.set_headline(
-				__("Aktive Version — schreibgeschuetzt. Aenderungen erfordern eine neue Version."),
+				frm.doc.is_active
+					? __("Aktive Version — schreibgeschuetzt. Aenderungen erfordern eine neue Version.")
+					: __("Bereits aktiviert gewesen — dauerhaft schreibgeschuetzt. Aenderungen erfordern eine neue Version."),
 				"orange"
 			);
 			frm.add_custom_button(__("Bearbeiten als neue Version"), () => {
 				_open_duplicate_dialog(frm);
 			}).addClass("btn-primary");
-		} else {
-			// Felder editierbar lassen (defensiv falls jemand die Form vorher in aktivem
-			// Zustand geoeffnet hatte und der Refresh nicht ganz frisch ist)
-			for (const fname of locked_fields) {
-				frm.set_df_property(fname, "read_only", 0);
-			}
+		}
+		// "Aktivieren" auch fuer eine eingefrorene, aber gerade inaktive Version
+		// anbieten (Rollback auf eine alte Version).
+		if (!frm.doc.is_active) {
 			frm.add_custom_button(__("Aktivieren"), () => _open_activation_dialog(frm));
 		}
 
@@ -81,6 +84,12 @@ frappe.ui.form.on("Prozess Schritt IO", {
 	kind: (frm) => _render_dag_preview(frm),
 	target: (frm) => _render_dag_preview(frm),
 });
+
+function _is_version_locked(frm) {
+	// Phase 10: dauerhafter Content-Lock — aktiv ODER jemals aktiviert gewesen.
+	// Spiegelt das Server-Praedikat in _enforce_active_immutability.
+	return !!(frm.doc.is_active || frm.doc.wurde_aktiviert);
+}
 
 function _open_duplicate_dialog(frm) {
 	frappe.prompt(
@@ -304,10 +313,18 @@ function _render_dag_preview(frm) {
 async function _render_visual_editor(frm) {
 	const field = frm.get_field("editor_html");
 	if (!field) return;
+	const is_locked = _is_version_locked(frm);
 	const $wrapper = field.$wrapper;
-	const shell_class = frm.doc.is_active ? "pe-editor-shell pe-readonly" : "pe-editor-shell";
+	const shell_class = is_locked ? "pe-editor-shell pe-readonly" : "pe-editor-shell";
+	// Toolbar (absolut positioniertes Overlay) nur fuer editierbare Versionen.
+	const toolbar_html = is_locked
+		? ""
+		: `<div class="pe-toolbar">
+				<button class="btn btn-xs pe-add-step">+ ${__("Schritt")}</button>
+			</div>`;
 	$wrapper.html(`
-		<div class="${shell_class}" style="margin-top: ${frm.doc.is_active ? "32px" : "0"};">
+		<div class="${shell_class}" style="margin-top: ${is_locked ? "32px" : "0"};">
+			${toolbar_html}
 			<div class="pe-canvas"></div>
 			<div class="pe-inspector"></div>
 		</div>
@@ -315,13 +332,16 @@ async function _render_visual_editor(frm) {
 	const canvas = $wrapper.find(".pe-canvas").get(0);
 	const inspector_el = $wrapper.find(".pe-inspector").get(0);
 	if (!canvas || !inspector_el) return;
+	if (!is_locked) {
+		$wrapper.find(".pe-add-step").off("click").on("click", () => _open_add_step_dialog(frm));
+	}
 	await new Promise((r) => frappe.require("/assets/process_engine/js/process_editor.js", r));
 	await window.process_engine.editor.render({
 		container: canvas,
 		schritte: frm.doc.schritte || [],
 		schritt_io: frm.doc.schritt_io || [],
 		payload_field_specs: frm.doc.payload_field_specs || [],
-		read_only: !!frm.doc.is_active,
+		read_only: is_locked,
 		on_save_position(step_key, x, y) {
 			const row = (frm.doc.schritte || []).find((r) => (r.step_key || "").trim() === step_key);
 			if (!row) return;
@@ -329,7 +349,7 @@ async function _render_visual_editor(frm) {
 			frappe.model.set_value(row.doctype, row.name, "editor_y", y);
 		},
 		on_create_edge(src, dst) {
-			if (frm.doc.is_active) return;
+			if (is_locked) return;
 			// dst.kind ist entweder "payload_input" oder "step_input" — beide erzeugen
 			// eine schritt_io-Zeile mit demselben Schema (step_key, kind, target).
 			if (!dst.kind || !dst.target || !dst.step_key) return;
@@ -349,7 +369,7 @@ async function _render_visual_editor(frm) {
 			_render_dag_preview(frm);
 		},
 		on_delete_edge(src, dst) {
-			if (frm.doc.is_active) return;
+			if (is_locked) return;
 			if (!dst.kind || !dst.target || !dst.step_key) return;
 			const before = frm.doc.schritt_io || [];
 			const remaining = before.filter(
@@ -361,13 +381,9 @@ async function _render_visual_editor(frm) {
 					)
 			);
 			if (remaining.length === before.length) return;
-			frm.clear_table("schritt_io");
-			for (const r of remaining) {
-				const new_row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
-				new_row.step_key = r.step_key;
-				new_row.kind = r.kind;
-				new_row.target = r.target;
-			}
+			// Volle Zeilen behalten (inkl. optionalem description) — clear_table + Re-Add
+			// mit nur step_key/kind/target wuerde description aller Zeilen verlieren.
+			frm.doc.schritt_io = remaining;
 			frm.refresh_field("schritt_io");
 			frm.dirty();
 			_render_dag_preview(frm);
@@ -375,6 +391,158 @@ async function _render_visual_editor(frm) {
 		on_select_node(step_key) {
 			_open_inspector(frm, inspector_el, step_key);
 		},
+	});
+}
+
+// Task-Type-Optionen identisch zum DocType-Select (prozess_schritt.json).
+// Als Funktion (nicht top-level const): Doctype-JS teilt sich den globalen Scope,
+// ein erneut evaluiertes top-level `const` wuerde "already declared" werfen.
+function _pe_task_types() {
+	return [
+		"manual_check",
+		"file_upload",
+		"python_action",
+		"print_document",
+		"paperless_export",
+		"email_draft",
+		"create_linked_doc",
+	];
+}
+
+function _open_add_step_dialog(frm) {
+	const existing_keys = new Set(
+		(frm.doc.schritte || []).map((r) => (r.step_key || "").trim()).filter(Boolean)
+	);
+	// step_key-Default wie Server: step_NN mit naechstem freien Index.
+	let idx = (frm.doc.schritte || []).length + 1;
+	const _key_for = (n) => `step_${String(n).padStart(2, "0")}`;
+	while (existing_keys.has(_key_for(idx))) idx += 1;
+
+	const d = new frappe.ui.Dialog({
+		title: __("Schritt hinzufügen"),
+		fields: [
+			{ fieldname: "titel", fieldtype: "Data", label: __("Titel"), reqd: 1 },
+			{
+				fieldname: "step_key",
+				fieldtype: "Data",
+				label: __("Step Key"),
+				reqd: 1,
+				default: _key_for(idx),
+			},
+			{
+				fieldname: "task_type",
+				fieldtype: "Select",
+				label: __("Task Type"),
+				reqd: 1,
+				options: _pe_task_types().join("\n"),
+				default: "manual_check",
+			},
+		],
+		primary_action_label: __("Hinzufügen"),
+		primary_action(values) {
+			const step_key = (values.step_key || "").trim();
+			if (!step_key) {
+				frappe.msgprint(__("Step Key ist erforderlich."));
+				return;
+			}
+			if (existing_keys.has(step_key)) {
+				frappe.msgprint(__("Step Key ist bereits vergeben: {0}", [step_key]));
+				return;
+			}
+			// Freie Canvas-Position rechts neben dem rechtesten vorhandenen Node.
+			const max_x = (frm.doc.schritte || []).reduce(
+				(m, r) => Math.max(m, Number(r.editor_x) || 0),
+				0
+			);
+			const new_x = max_x ? max_x + 320 : 300;
+			// reihenfolge ans Ende: groesster vorhandener Wert + 10, VOR add_child berechnet
+			// (sonst zaehlt die neue Zeile mit). .length waere falsch bei Luecken/nach Loeschen,
+			// da _normalize_rows nur leere reihenfolge fuellt, bestehende NICHT umnummeriert.
+			const max_ord = (frm.doc.schritte || []).reduce((m, r) => Math.max(m, cint(r.reihenfolge)), 0);
+
+			const row = frappe.model.add_child(frm.doc, "Prozess Schritt", "schritte");
+			row.titel = (values.titel || "").trim();
+			row.step_key = step_key;
+			row.task_type = values.task_type || "manual_check";
+			row.sichtbar_fuer_prozess_typ = "Beide";
+			row.pflicht = 1;
+			row.reihenfolge = max_ord + 10;
+			row.editor_x = new_x;
+			row.editor_y = 40;
+			frm.refresh_field("schritte");
+			frm.dirty();
+			d.hide();
+			_render_dag_preview(frm);
+			_render_visual_editor(frm);
+			frappe.show_alert(
+				{
+					message: __("Schritt angelegt — I/O über die Ports verbinden."),
+					indicator: "blue",
+				},
+				5
+			);
+		},
+	});
+	d.show();
+}
+
+function _delete_step(frm, inspector_el, step_key) {
+	if (_is_version_locked(frm)) return;
+	const sk = (step_key || "").trim();
+	if (!sk) return;
+	const all_io = frm.doc.schritt_io || [];
+
+	// Felder, die dieser Schritt als payload_output produziert …
+	const my_outputs = all_io
+		.filter((r) => (r.step_key || "").trim() === sk && (r.kind || "").trim() === "payload_output")
+		.map((r) => (r.target || "").trim());
+	// … und davon jene, die andere Schritte als payload_input konsumieren →
+	// die verlieren ihren Producer und werden fortan als Process Input interpretiert.
+	const orphaned = my_outputs.filter((f) =>
+		all_io.some(
+			(r) =>
+				(r.kind || "").trim() === "payload_input" &&
+				(r.target || "").trim() === f &&
+				(r.step_key || "").trim() !== sk
+		)
+	);
+	// Schritte, die diesen Schritt als step_input-Vorgaenger haben → Reihenfolge entfaellt.
+	const dependents = all_io
+		.filter((r) => (r.kind || "").trim() === "step_input" && (r.target || "").trim() === sk)
+		.map((r) => (r.step_key || "").trim());
+
+	let warn = "";
+	if (orphaned.length) {
+		warn += `<p class="text-warning"><b>${__("Achtung:")}</b> ${__(
+			"Folgende Felder verlieren ihren Producer und werden zu Process Inputs:"
+		)} ${orphaned.map((f) => `<code>${frappe.utils.escape_html(f)}</code>`).join(", ")}</p>`;
+	}
+	if (dependents.length) {
+		warn += `<p class="text-muted">${__("Vorgaenger-Abhaengigkeit entfaellt fuer:")} ${dependents
+			.map((d) => `<code>${frappe.utils.escape_html(d)}</code>`)
+			.join(", ")}</p>`;
+	}
+
+	const msg = `<p>${__("Schritt {0} wirklich loeschen?", [`<code>${frappe.utils.escape_html(sk)}</code>`])}</p>${warn}`;
+	frappe.confirm(msg, () => {
+		// schritte-Zeile entfernen
+		frm.doc.schritte = (frm.doc.schritte || []).filter((r) => (r.step_key || "").trim() !== sk);
+		// Cascade: alle I/O dieses Schritts + step_inputs, die auf ihn zeigen.
+		// Consumer-payload_inputs anderer Schritte bleiben bewusst erhalten (siehe Warnung).
+		frm.doc.schritt_io = (frm.doc.schritt_io || []).filter((r) => {
+			const rsk = (r.step_key || "").trim();
+			const kind = (r.kind || "").trim();
+			const tgt = (r.target || "").trim();
+			if (rsk === sk) return false;
+			if (kind === "step_input" && tgt === sk) return false;
+			return true;
+		});
+		frm.refresh_field("schritte");
+		frm.refresh_field("schritt_io");
+		frm.dirty();
+		$(inspector_el).removeClass("pe-open").empty();
+		_render_dag_preview(frm);
+		_render_visual_editor(frm);
 	});
 }
 
@@ -386,7 +554,7 @@ function _open_inspector(frm, inspector_el, step_key) {
 		return;
 	}
 	const io_rows = (frm.doc.schritt_io || []).filter((r) => (r.step_key || "").trim() === step_key);
-	const read_only = !!frm.doc.is_active;
+	const read_only = _is_version_locked(frm);
 	const io_list = io_rows
 		.map(
 			(r) =>
@@ -396,15 +564,15 @@ function _open_inspector(frm, inspector_el, step_key) {
 	$inspector.html(`
 		<div class="pe-inspector-header">
 			<strong>${frappe.utils.escape_html(row.titel || row.step_key)}</strong>
-			<button class="pe-inspector-close" title="${__("Schliessen")}">&times;</button>
+			<span class="pe-inspector-actions">
+				${read_only ? "" : `<button class="pe-inspector-delete btn btn-xs" title="${__("Schritt löschen")}">${__("Löschen")}</button>`}
+				<button class="pe-inspector-close" title="${__("Schliessen")}">&times;</button>
+			</span>
 		</div>
 		<div class="pe-inspector-section">
 			<h6>${__("Schritt")}</h6>
 			<div class="pe-kv"><b>step_key:</b> <code>${frappe.utils.escape_html(row.step_key || "")}</code></div>
-			<div class="pe-kv"><b>task_type:</b> ${frappe.utils.escape_html(row.task_type || "")}</div>
-			<div class="pe-kv"><b>pflicht:</b> ${row.pflicht ? "ja" : "nein"}</div>
-			<div class="pe-kv"><b>sichtbar:</b> ${frappe.utils.escape_html(row.sichtbar_fuer_prozess_typ || "")}</div>
-			${row.handler_key ? `<div class="pe-kv"><b>handler_key:</b> <code>${frappe.utils.escape_html(row.handler_key)}</code></div>` : ""}
+			<div class="pe-fields"></div>
 			${row.print_format ? `<div class="pe-kv"><b>print_format:</b> ${frappe.utils.escape_html(row.print_format)}</div>` : ""}
 		</div>
 		<div class="pe-inspector-section">
@@ -413,13 +581,16 @@ function _open_inspector(frm, inspector_el, step_key) {
 		</div>
 		${
 			read_only
-				? `<div class="text-warning"><small>${__("Aktive Version — Edit nur via duplizieren.")}</small></div>`
+				? `<div class="text-warning"><small>${__("Schreibgeschuetzt — Edit nur via 'Bearbeiten als neue Version'.")}</small></div>`
 				: `<div class="pe-inspector-section"><button class="btn btn-xs btn-default" data-action="open-grid">${__("Im Grid bearbeiten")}</button></div>`
 		}
 	`);
 	$inspector.addClass("pe-open");
 	$inspector.find(".pe-inspector-close").off("click").on("click", () => {
 		$inspector.removeClass("pe-open").empty();
+	});
+	$inspector.find(".pe-inspector-delete").off("click").on("click", () => {
+		_delete_step(frm, inspector_el, step_key);
 	});
 	$inspector.find('[data-action="open-grid"]').off("click").on("click", () => {
 		// Scrollen zum Schritte-Grid und Row oeffnen
@@ -431,4 +602,100 @@ function _open_inspector(frm, inspector_el, step_key) {
 			} catch (e) {}
 		}
 	});
+
+	const fields_el = $inspector.find(".pe-fields").get(0);
+	if (read_only) {
+		$(fields_el).html(`
+			<div class="pe-kv"><b>task_type:</b> ${frappe.utils.escape_html(row.task_type || "")}</div>
+			<div class="pe-kv"><b>pflicht:</b> ${row.pflicht ? "ja" : "nein"}</div>
+			<div class="pe-kv"><b>sichtbar:</b> ${frappe.utils.escape_html(row.sichtbar_fuer_prozess_typ || "")}</div>
+			${row.handler_key ? `<div class="pe-kv"><b>handler_key:</b> <code>${frappe.utils.escape_html(row.handler_key)}</code></div>` : ""}
+		`);
+	} else {
+		_render_inspector_fields(frm, inspector_el, row, fields_el);
+	}
+}
+
+// Phase 10 / Stufe 3: einfache Schrittfelder inline via make_control editierbar.
+// Muster analog prozess_instanz.js. step_key bewusst NICHT editierbar (String-FK in
+// schritt_io). konfig_json bleibt im Grid.
+function _render_inspector_fields(frm, inspector_el, row, container) {
+	const defs = [
+		{ fieldname: "titel", fieldtype: "Data", label: __("Titel"), reqd: 1 },
+		{
+			fieldname: "task_type",
+			fieldtype: "Select",
+			label: __("Task Type"),
+			options: _pe_task_types().join("\n"),
+		},
+		{ fieldname: "pflicht", fieldtype: "Check", label: __("Pflicht") },
+		{ fieldname: "sichtbar_fuer_prozess_typ", fieldtype: "Data", label: __("Sichtbar fuer Prozess-Typ") },
+		{ fieldname: "handler_key", fieldtype: "Data", label: __("Handler Key") },
+	];
+	for (const def of defs) {
+		const $col = $('<div class="pe-field" style="margin-bottom:8px;"></div>');
+		$(container).append($col);
+		const ctrl = frappe.ui.form.make_control({
+			df: {
+				fieldname: def.fieldname,
+				label: def.label,
+				fieldtype: def.fieldtype,
+				options: def.options || undefined,
+				reqd: def.reqd || 0,
+			},
+			parent: $col.get(0),
+			render_input: true,
+		});
+		if (def.fieldtype === "Check") {
+			ctrl.set_value(cint(row[def.fieldname]));
+		} else {
+			ctrl.set_value(row[def.fieldname] || "");
+		}
+		// Direkt am Input lauschen statt auf Frappes df.onchange: dessen Change-Pipeline
+		// (base_control) greift bei make_controls, die NACH einem Editor-Re-render erzeugt
+		// werden, nicht zuverlaessig. change feuert auf blur (Data) bzw. sofort (Select/Check)
+		// — also nicht pro Tastendruck, kein Springen des Inspectors.
+		const _apply = () => {
+			let val = ctrl.get_value();
+			if (def.fieldtype === "Check") val = cint(val);
+			frappe.model.set_value(row.doctype, row.name, def.fieldname, val);
+			frm.dirty();
+			if (def.fieldname === "titel" || def.fieldname === "task_type") {
+				// In-place Node-Label patchen statt Full-Re-render (Fokus bleibt).
+				_patch_node_label(inspector_el, row.step_key, def.fieldname, val);
+				if (def.fieldname === "titel") {
+					$(inspector_el)
+						.find(".pe-inspector-header > strong")
+						.text(val || row.step_key);
+				}
+				_render_dag_preview(frm);
+			}
+		};
+		if (ctrl.$input && ctrl.$input.length) {
+			ctrl.$input.on("change", _apply);
+		} else {
+			ctrl.df.onchange = _apply;
+		}
+	}
+}
+
+// Aktualisiert Titel/Badge eines Nodes direkt im Canvas-DOM (data-step-key wird vom
+// Editor gesetzt), ohne den Canvas neu zu zeichnen.
+function _patch_node_label(inspector_el, step_key, fieldname, val) {
+	const sk = (step_key || "").trim();
+	if (!sk) return;
+	// step_key ist freier Data-Text und kann Sonderzeichen (inkl. Spaces) enthalten, die
+	// den Attribut-Selektor sonst zerbrechen. Primaer CSS.escape (unquoted), Fallback ist
+	// die quoted-Form mit escapeten Quotes/Backslashes — beide vertragen Spaces.
+	const $shell = $(inspector_el).closest(".pe-editor-shell");
+	const $node =
+		window.CSS && CSS.escape
+			? $shell.find(`.pe-canvas .drawflow-node[data-step-key=${CSS.escape(sk)}]`)
+			: $shell.find(`.pe-canvas .drawflow-node[data-step-key="${sk.replace(/(["\\])/g, "\\$1")}"]`);
+	if (!$node.length) return;
+	if (fieldname === "titel") {
+		$node.find(".pe-node-header strong").text(val || sk);
+	} else if (fieldname === "task_type") {
+		$node.find(".pe-node-header .pe-badge").text(val || "");
+	}
 }
