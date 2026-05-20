@@ -33,7 +33,6 @@ from process_engine.process_engine.processes.task_registry import (
 	TASK_TYPE_PRINT_DOCUMENT,
 	TaskHandlerContext,
 	TaskHandlerRegistry,
-	dump_task_config,
 	extract_task_config,
 	normalize_task_type,
 )
@@ -1117,9 +1116,10 @@ class ProcessEngine:
 			verantwortlich = self._find_default_user_for_role(step.get("standard_verantwortlich_rolle"))
 			task_type = normalize_task_type(step.get("task_type"))
 			handler_key = (step.get("handler_key") or "").strip() or task_type
-			cfg = extract_task_config(frappe._dict(step))
+			# Phase 10: kein Config-Snapshot mehr auf der Aufgabe — Config wird zur Laufzeit
+			# live aus der Prozess Version aufgeloest. Hier nur noch die Vorlagen-Config
+			# validieren (frueh fehlschlagen, falls eine Schritt-Konfig kaputt ist).
 			self.config.task_handler_registry.get_handler(handler_key=handler_key, task_type=task_type, context=self.config.task_handler_context).validate_config(frappe._dict(step))
-			config_json = dump_task_config(cfg)
 
 			step_key = (step.get("step_key") or "").strip()
 			legacy_parent = (step.get("parent_step_key") or "").strip()
@@ -1140,8 +1140,6 @@ class ProcessEngine:
 					"parent_step_key": legacy_parent,
 					"depends_on_json": json.dumps(deps),
 					"mapping_flag": (step.get("mapping_flag") or "").strip(),
-					"konfig_snapshot_json": config_json,
-					"config_json": config_json,
 					"faellig_am": faellig_am,
 					"verantwortlich": verantwortlich,
 				}

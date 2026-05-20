@@ -1,5 +1,6 @@
 [pre_model_sync]
 process_engine.process_engine.patches.pre_model_sync.preserve_konfig_json_before_config_drop
+process_engine.process_engine.patches.pre_model_sync.drop_runtime_config_snapshot
 
 [post_model_sync]
 process_engine.process_engine.patches.post_model_sync.migrate_doctype_modules

@@ -252,13 +252,18 @@ async function _dispatch_task_action(frm, action, row_name, status) {
 // ==================== 5c: create_linked_doc Dialog ====================
 
 async function _open_create_linked_dialog(frm, row_name) {
+	// Phase 10: dialog_fields UND target_doctype kommen vom Server (Config wird dort live
+	// aus der Prozess Version aufgeloest — die Aufgabe traegt keinen Snapshot mehr).
 	let dialog_fields = [];
+	let target_doctype = "";
 	try {
 		const r = await frappe.call({
 			method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_create_linked_dialog_fields",
 			args: { docname: frm.doc.name, row_name },
 		});
-		dialog_fields = r.message || [];
+		const msg = r.message || {};
+		dialog_fields = msg.fields || [];
+		target_doctype = msg.target_doctype || "";
 	} catch (err) {
 		frappe.msgprint({
 			title: __("Dialog konnte nicht geoeffnet werden"),
@@ -271,13 +276,6 @@ async function _open_create_linked_dialog(frm, row_name) {
 		frappe.show_alert({ message: __("Keine Dialog-Felder in Task-Config."), indicator: "orange" });
 		return;
 	}
-
-	const row = (frm.doc.aufgaben || []).find((r) => r.name === row_name);
-	let target_doctype = "";
-	try {
-		const cfg = JSON.parse((row && row.config_json) || "{}");
-		target_doctype = cfg.target_doctype || "";
-	} catch (e) {}
 
 	const dialog = new frappe.ui.Dialog({
 		title: target_doctype ? __("Neu anlegen: {0}", [target_doctype]) : __("Neu anlegen"),

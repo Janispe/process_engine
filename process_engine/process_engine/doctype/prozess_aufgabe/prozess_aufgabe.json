@@ -20,8 +20,6 @@
   "erfuellt",
   "erfuellt_am",
   "erfuellt_von",
-  "config_json",
-  "konfig_snapshot_json",
   "result_json",
   "mapping_flag",
   "todo"
@@ -128,20 +126,6 @@
    "fieldtype": "Link",
    "label": "Erfuellt von",
    "options": "User",
-   "read_only": 1
-  },
-  {
-   "fieldname": "config_json",
-   "fieldtype": "Small Text",
-   "hidden": 1,
-   "label": "Config JSON",
-   "read_only": 1
-  },
-  {
-   "fieldname": "konfig_snapshot_json",
-   "fieldtype": "Small Text",
-   "hidden": 1,
-   "label": "Konfig Snapshot JSON",
    "read_only": 1
   },
   {

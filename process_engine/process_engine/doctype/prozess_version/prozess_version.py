@@ -60,6 +60,20 @@ class ProzessVersion(Document):
 		self._validate_active_uniqueness()
 		self._validate_schritt_io()
 
+	def on_trash(self) -> None:
+		# Phase 10: Laufzeit-Aufgaben lesen ihre Config live aus der referenzierten
+		# Prozess Version (kein Snapshot mehr). Eine Version, die von mindestens einer
+		# Prozess Instanz referenziert wird, darf daher nicht geloescht werden — sonst
+		# verloeren laufende/abgeschlossene Instanzen ihre Config-Quelle.
+		count = frappe.db.count("Prozess Instanz", {"prozess_version": self.name})
+		if count:
+			frappe.throw(
+				_(
+					"Diese Prozess Version wird von {0} Prozess Instanz(en) referenziert "
+					"und kann nicht geloescht werden. Erst die Instanzen entfernen."
+				).format(count)
+			)
+
 	def _enforce_active_immutability(self) -> None:
 		if self.is_new():
 			return

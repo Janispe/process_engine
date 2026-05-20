@@ -67,7 +67,7 @@ def dispatch_workflow_action(
 
 
 @frappe.whitelist()
-def get_create_linked_dialog_fields(docname: str, row_name: str) -> list[dict]:
+def get_create_linked_dialog_fields(docname: str, row_name: str) -> dict:
 	"""Liefert die Dialog-Field-Definitionen fuer eine create_linked_doc-Aufgabe.
 
 	Single Source of Truth: `dialog_fields` aus der Task-Config. Wir raten nichts
@@ -85,12 +85,11 @@ def get_create_linked_dialog_fields(docname: str, row_name: str) -> list[dict]:
 	row = next((r for r in (doc.aufgaben or []) if r.name == row_name), None)
 	if not row:
 		frappe.throw(f"Task-Row '{row_name}' nicht gefunden.")
-	try:
-		config = _json.loads(row.config_json or "{}")
-	except (ValueError, TypeError):
-		config = {}
-	if not isinstance(config, dict):
-		config = {}
+	# Phase 10: Aufgaben tragen keine eigene Config mehr — live aus der Prozess Version
+	# aufloesen (extract_task_config erkennt die Aufgabe und resolved Version->Schritt).
+	from process_engine.process_engine.processes.task_registry import extract_task_config
+
+	config = extract_task_config(row)
 	dialog_fields = list(config.get("dialog_fields") or [])
 	prefill = config.get("prefill_mapping") or {}
 	try:
@@ -119,4 +118,4 @@ def get_create_linked_dialog_fields(docname: str, row_name: str) -> list[dict]:
 		fn = fld.get("fieldname")
 		if fn and fn in rendered_defaults and rendered_defaults[fn] is not None:
 			fld["default"] = rendered_defaults[fn]
-	return dialog_fields
+	return {"fields": dialog_fields, "target_doctype": (config.get("target_doctype") or "")}

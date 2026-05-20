@@ -68,18 +68,22 @@ def normalize_task_type(value: str | None) -> str:
 
 
 def extract_task_config(step_or_task) -> dict:
+	# Phase 10: Laufzeit-Aufgaben (Prozess Aufgabe) tragen KEINE eigene Config mehr
+	# (Snapshot entfernt). Ihre Config wird live aus der referenzierten Prozess Version
+	# aufgeloest. Vorlagen-Schritte (Prozess Schritt) und Seed-Dicts lesen weiter inline
+	# aus konfig_json. Diese Engstelle haelt alle Aufrufer (auch Consumer-Apps) unveraendert.
+	if getattr(step_or_task, "doctype", None) == "Prozess Aufgabe":
+		return _resolve_runtime_task_config(step_or_task)
+
 	config = {}
-	for attr in ("config_json", "konfig_snapshot_json", "konfig_json"):
-		raw = (getattr(step_or_task, attr, None) or "").strip()
-		if not raw:
-			continue
+	raw = (getattr(step_or_task, "konfig_json", None) or "").strip()
+	if raw:
 		try:
 			parsed = json.loads(raw)
+			if isinstance(parsed, dict):
+				config.update(parsed)
 		except Exception:
-			continue
-		if isinstance(parsed, dict):
-			config.update(parsed)
-			break
+			pass
 
 	if getattr(step_or_task, "dokument_typ_tag", None):
 		config.setdefault("dokument_typ_tag", (step_or_task.dokument_typ_tag or "").strip())
@@ -89,6 +93,29 @@ def extract_task_config(step_or_task) -> dict:
 		config.setdefault("handler_key", (step_or_task.handler_key or "").strip())
 
 	return config
+
+
+def _resolve_runtime_task_config(task_row) -> dict:
+	"""Loest die Config einer Laufzeit-Aufgabe live aus ihrer Prozess Version auf
+	(Instanz -> prozess_version -> Schritt nach step_key -> konfig_json). Gibt bei
+	fehlender Aufloesung {} zurueck (defensiv)."""
+	parent = getattr(task_row, "parent", None)
+	parenttype = getattr(task_row, "parenttype", None)
+	step_key = (getattr(task_row, "step_key", None) or "").strip()
+	if not (parent and parenttype == "Prozess Instanz" and step_key):
+		return {}
+	try:
+		instance = frappe.get_cached_doc("Prozess Instanz", parent)
+		version_name = (instance.get("prozess_version") or "").strip()
+		if not version_name:
+			return {}
+		version = frappe.get_cached_doc("Prozess Version", version_name)
+	except frappe.DoesNotExistError:
+		return {}
+	for step in version.get("schritte") or []:
+		if (step.get("step_key") or "").strip() == step_key:
+			return extract_task_config(step)
+	return {}
 
 
 def dump_task_config(config: dict) -> str:
@@ -288,7 +315,7 @@ class PrintDocumentTaskHandler(BaseTaskHandler):
 class CreateLinkedDocTaskHandler(BaseTaskHandler):
 	"""Phase 5c: Aufgabe „Neuen Vertrag anlegen"-artig.
 
-	Konfig (config_json bzw. konfig_snapshot_json):
+	Konfig (konfig_json der Vorlage, zur Laufzeit live aufgeloest):
 	  - target_doctype: Ziel-DocType (z.B. "Mietvertrag")
 	  - store_in_payload_field: payload_json-Key, in den der neue Doc-Name geschrieben wird
 	  - dialog_fields: Liste von Field-Defs fuer den Erstellungs-Dialog (Single Source of Truth)
