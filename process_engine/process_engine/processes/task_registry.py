@@ -182,6 +182,30 @@ class BaseTaskHandler:
 	def run_action(self, context: TaskHandlerContext, doc: Document, task_row, payload: dict | None = None) -> dict:
 		frappe.throw(_("Ausfuehrung wird fuer diesen Aufgabentyp nicht unterstuetzt."))
 
+	def config_schema(self) -> dict | None:
+		"""Phase 13: Selbstbeschreibung der Definitions-Config. None -> roher konfig_json-
+		Editor (permanenter Fallback). Sonst {"fields": [ConfigField, ...]} mit
+		ConfigField = {key, label, fieldtype, options?, reqd?, widget?}; widget default
+		"control", sonst "payload_field_select" | "doc_field_mapping" (Editor-seitig dynamisch)."""
+		return None
+
+	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
+		"""Phase 13: Selbstbeschreibung der Laufzeit-Aktionen (Klick in der Aufgabe).
+		Descriptor = {key, label, primary?, disabled?, reason?, dialog?, ignore_lock?,
+		_dispatch, _params}. `key`/`dialog` sind client-facing; `_dispatch` (eine allowlistete
+		ACTION_*) + `_params` bleiben serverseitig (run_task_action mappt key -> _dispatch).
+		Basis = Status-Toggle (gilt fuer alle Typen); Subklassen ergaenzen via super()."""
+		done = (task_row.status or "") == "Erledigt"
+		if done:
+			return [{
+				"key": "reopen", "label": _("Wieder oeffnen"), "ignore_lock": True,
+				"_dispatch": "set_task_status", "_params": {"status": "Offen"},
+			}]
+		return [{
+			"key": "set_done", "label": _("Erledigt"), "primary": True,
+			"_dispatch": "set_task_status", "_params": {"status": "Erledigt"},
+		}]
+
 
 class ManualCheckTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_MANUAL_CHECK
@@ -199,9 +223,38 @@ class PythonActionTaskHandler(BaseTaskHandler):
 	def run_action(self, context: TaskHandlerContext, doc: Document, task_row, payload: dict | None = None) -> dict:
 		frappe.throw(_("Kein Python-Handler fuer diese Aufgabe registriert."))
 
+	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
+		actions = super().runtime_actions(context, doc, task_row)
+		actions.append({
+			"key": "run_python", "label": _("Ausfuehren"), "primary": True,
+			"_dispatch": "run_python_task", "_params": {},
+		})
+		return actions
+
 
 class PaperlessExportTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_PAPERLESS_EXPORT
+
+	def config_schema(self) -> dict | None:
+		return {
+			"fields": [
+				{"key": "dokument_typ_tag", "label": _("Dokument-Typ-Tag"), "fieldtype": "Data", "reqd": 1},
+			]
+		}
+
+	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
+		actions = super().runtime_actions(context, doc, task_row)
+		# Detail-Row existiert bereits aus seed_detail -> ensure_* ist hier reiner Read.
+		detail = ensure_file_detail(context, doc.name, task_row.name)
+		export = {
+			"key": "export_file", "label": _("Nach Paperless"), "primary": True,
+			"_dispatch": "export_file_task", "_params": {},
+		}
+		if not (detail.file_url or "").strip():
+			export["disabled"] = True
+			export["reason"] = _("Bitte zuerst eine Datei hochladen.")
+		actions.append(export)
+		return actions
 
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
@@ -266,6 +319,25 @@ class PaperlessExportTaskHandler(BaseTaskHandler):
 
 class PrintDocumentTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_PRINT_DOCUMENT
+
+	def config_schema(self) -> dict | None:
+		return {
+			"fields": [
+				{"key": "print_format", "label": _("Print Format"), "fieldtype": "Link", "options": "Print Format", "reqd": 1},
+			]
+		}
+
+	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
+		actions = super().runtime_actions(context, doc, task_row)
+		actions.append({
+			"key": "generate_print", "label": _("PDF generieren"), "primary": True,
+			"_dispatch": "generate_print_task", "_params": {},
+		})
+		actions.append({
+			"key": "confirm_filed", "label": _("Abheften bestaetigen"),
+			"_dispatch": "confirm_print_task", "_params": {"confirmed": 1},
+		})
+		return actions
 
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
@@ -342,6 +414,15 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 			frappe.throw(_("create_linked_doc erfordert target_doctype in der Konfig."))
 		if not (config.get("store_in_payload_field") or "").strip():
 			frappe.throw(_("create_linked_doc erfordert store_in_payload_field in der Konfig."))
+
+	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
+		actions = super().runtime_actions(context, doc, task_row)
+		actions.append({
+			"key": "create_linked", "label": _("Neu anlegen"), "primary": True,
+			"dialog": "create_linked",
+			"_dispatch": "create_linked_doc", "_params": {},
+		})
+		return actions
 
 	def is_fulfilled(self, context: TaskHandlerContext, doc: Document, task_row) -> TaskCheckResult:
 		config = extract_task_config(task_row)

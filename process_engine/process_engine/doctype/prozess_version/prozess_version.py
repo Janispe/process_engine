@@ -620,3 +620,28 @@ def activate_version(name: str) -> str:
 	if not doc.wurde_aktiviert:
 		doc.db_set("wurde_aktiviert", 1, update_modified=False)
 	return doc.name
+
+
+@frappe.whitelist()
+def get_task_config_schema(prozess_typ: str | None = None, task_type: str | None = None, handler_key: str | None = None):
+	"""Phase 13: liefert das Config-Schema eines Aufgabentyps (Handler-Selbstbeschreibung)
+	fuer den Editor. Handler-bezogen (kein persistierter Step noetig — der Editor arbeitet
+	auf frm.doc). prozess_typ optional, um Consumer-/Custom-Handler aufzuloesen; sonst
+	Default-Registry (Built-in-Handler)."""
+	from process_engine.process_engine.processes.task_registry import TaskHandlerRegistry
+
+	tt = (task_type or "").strip()
+	hk = (handler_key or "").strip()
+	typ = (prozess_typ or "").strip()
+	handler = None
+	if typ:
+		from process_engine.process_engine.processes.engine import get_runtime_config_for_typ
+
+		cfg = get_runtime_config_for_typ(typ)
+		if cfg:
+			handler = cfg.task_handler_registry.get_handler(
+				handler_key=hk, task_type=tt, context=cfg.task_handler_context
+			)
+	if handler is None:
+		handler = TaskHandlerRegistry().get_handler(handler_key=hk, task_type=tt)
+	return handler.config_schema()

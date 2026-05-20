@@ -831,6 +831,14 @@ class ProcessEngine:
 			self._get_task_handler(row).seed_detail(self.config.task_handler_context, doc, row, extract_task_config(row))
 
 	def _sync_task_fulfillment_state(self, doc: Document) -> None:
+		# Spiegelt den Guard aus _ensure_task_detail_rows: vor dem ersten DB-Insert ist
+		# die Live-Config einer Aufgabe noch nicht aufloesbar (extract_task_config holt die
+		# Prozess Version ueber den noch nicht persistierten Parent). is_fulfilled wuerde dann
+		# fuer print_document/paperless ein Detail mit leerem Pflichtfeld anlegen wollen
+		# (MandatoryError). Frisch erzeugte Aufgaben sind ohnehin noch nicht erfuellt — der
+		# erste Save nach dem Insert synct den Zustand mit aufloesbarer Config.
+		if doc.is_new() and not frappe.db.exists(doc.doctype, doc.name):
+			return
 		for row in doc.get(self.config.task_fieldname) or []:
 			handler = self._get_task_handler(row)
 			res = handler.is_fulfilled(self.config.task_handler_context, doc, row)

@@ -647,47 +647,103 @@ function _open_inspector(frm, inspector_el, step_key) {
 	}
 }
 
-// konfig_json (Task-Config, rohes JSON) via Dialog editieren — vermeidet das
-// unzuverlaessige Inline-Binding eines Code/Ace-Controls. Nach Stufe 0 ist konfig_json
-// die einzige Config-Quelle; _normalize_rows/validate_config greifen beim Save.
+// Phase 13: Config wird aus dem Handler-Selbstbeschreibungs-Schema gerendert
+// (get_task_config_schema). Kein/leeres Schema -> rohe JSON-Vorschau. Raw-JSON-Dialog
+// bleibt als permanentes Escape Hatch ("JSON"-Button). Bound an konfig_json (einzige
+// Config-Quelle seit Stufe 0; _normalize_rows/validate_config greifen beim Save).
 function _render_konfig_editor(frm, inspector_el, row, container) {
-	const cur = (row.konfig_json || "").trim();
-	const preview = cur && cur !== "{}" ? cur : "{}";
+	let cfg = {};
+	try {
+		cfg = JSON.parse(row.konfig_json || "{}") || {};
+	} catch (e) {
+		cfg = {};
+	}
+	if (!cfg || typeof cfg !== "object") cfg = {};
 	$(container).html(`
-		<div class="pe-kv" style="margin-top:6px;"><b>${__("Konfig (JSON)")}</b></div>
-		<pre class="pe-konfig-pre">${frappe.utils.escape_html(preview)}</pre>
-		<button class="btn btn-xs btn-default pe-konfig-edit">${__("Konfig bearbeiten")}</button>
+		<div class="pe-kv" style="margin-top:6px;"><b>${__("Konfig")}</b>
+			<button class="btn btn-xs pe-konfig-raw" style="float:right;" title="${__("Rohes JSON bearbeiten")}">JSON</button>
+		</div>
+		<div class="pe-konfig-form"></div>
 	`);
-	$(container).find(".pe-konfig-edit").off("click").on("click", () => {
-		const d = new frappe.ui.Dialog({
-			title: __("Konfig (JSON): {0}", [row.step_key || ""]),
-			fields: [
-				{
-					fieldname: "konfig_json",
-					fieldtype: "Code",
-					label: __("Konfig JSON"),
-					options: "JSON",
-					default: cur || "{}",
-				},
-			],
-			primary_action_label: __("Übernehmen"),
-			primary_action(values) {
-				const raw = (values.konfig_json || "").trim() || "{}";
-				try {
-					JSON.parse(raw);
-				} catch (e) {
-					frappe.msgprint(__("Ungültiges JSON: {0}", [String(e)]));
-					return;
-				}
-				frappe.model.set_value(row.doctype, row.name, "konfig_json", raw);
-				frm.dirty();
-				d.hide();
-				// Vorschau aktualisieren (kein Canvas-Re-render noetig).
-				_render_konfig_editor(frm, inspector_el, row, container);
-			},
-		});
-		d.show();
+	const formEl = $(container).find(".pe-konfig-form").get(0);
+	$(container)
+		.find(".pe-konfig-raw")
+		.off("click")
+		.on("click", () =>
+			_open_konfig_raw_dialog(frm, row, () => _render_konfig_editor(frm, inspector_el, row, container))
+		);
+	frappe.call({
+		method: "process_engine.process_engine.doctype.prozess_version.prozess_version.get_task_config_schema",
+		args: { prozess_typ: frm.doc.prozess_typ, task_type: row.task_type, handler_key: row.handler_key },
+	}).then((r) => {
+		const schema = r && r.message;
+		if (schema && Array.isArray(schema.fields) && schema.fields.length) {
+			_render_config_fields(frm, row, formEl, schema.fields, cfg);
+		} else {
+			const raw = (row.konfig_json || "").trim();
+			$(formEl).html(`<pre class="pe-konfig-pre">${frappe.utils.escape_html(raw && raw !== "{}" ? raw : "{}")}</pre>`);
+		}
 	});
+}
+
+// Rendert die Config-Felder eines Schemas (widget "control" | "payload_field_select")
+// als make_controls, bound an die konfig_json-Keys. (doc_field_mapping kommt in Stufe 2.)
+function _render_config_fields(frm, row, container, fields, cfg) {
+	for (const def of fields) {
+		const widget = def.widget || "control";
+		const $col = $('<div class="pe-field" style="margin-bottom:6px;"></div>');
+		$(container).append($col);
+		let fieldtype = def.fieldtype || "Data";
+		let options = def.options;
+		if (widget === "payload_field_select") {
+			fieldtype = "Select";
+			options = (frm.doc.payload_field_specs || [])
+				.map((s) => (s.fieldname || "").trim())
+				.filter(Boolean)
+				.join("\n");
+		}
+		const ctrl = frappe.ui.form.make_control({
+			df: { fieldname: def.key, label: def.label || def.key, fieldtype, options: options || undefined, reqd: def.reqd || 0 },
+			parent: $col.get(0),
+			render_input: true,
+		});
+		const cur = cfg[def.key];
+		if (fieldtype === "Check") ctrl.set_value(cint(cur));
+		else ctrl.set_value(cur != null ? cur : "");
+		const _apply = () => {
+			let val = ctrl.get_value();
+			if (fieldtype === "Check") val = cint(val);
+			cfg[def.key] = val;
+			frappe.model.set_value(row.doctype, row.name, "konfig_json", JSON.stringify(cfg));
+			frm.dirty();
+		};
+		if (ctrl.$input && ctrl.$input.length) ctrl.$input.on("change", _apply);
+		else ctrl.df.onchange = _apply;
+	}
+}
+
+// Permanenter Fallback/Escape Hatch: rohes konfig_json im Code-Dialog.
+function _open_konfig_raw_dialog(frm, row, after) {
+	const cur = (row.konfig_json || "").trim();
+	const d = new frappe.ui.Dialog({
+		title: __("Konfig (JSON): {0}", [row.step_key || ""]),
+		fields: [{ fieldname: "konfig_json", fieldtype: "Code", label: __("Konfig JSON"), options: "JSON", default: cur || "{}" }],
+		primary_action_label: __("Übernehmen"),
+		primary_action(values) {
+			const raw = (values.konfig_json || "").trim() || "{}";
+			try {
+				JSON.parse(raw);
+			} catch (e) {
+				frappe.msgprint(__("Ungültiges JSON: {0}", [String(e)]));
+				return;
+			}
+			frappe.model.set_value(row.doctype, row.name, "konfig_json", raw);
+			frm.dirty();
+			d.hide();
+			if (after) after();
+		},
+	});
+	d.show();
 }
 
 // Phase 10 / Stufe 3: einfache Schrittfelder inline via make_control editierbar.

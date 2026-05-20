@@ -15,7 +15,7 @@ frappe.ui.form.on("Prozess Instanz", {
 			return;
 		}
 		await _render_payload_form(frm);
-		_render_task_action_panel(frm);
+		await _render_task_action_panel(frm);
 		_wire_task_actions(frm);
 		_render_progress_graph(frm);
 	},
@@ -124,7 +124,7 @@ function _add_raw_json_toggle(frm) {
 
 // ==================== 5b: Per-Task-Action-Buttons ====================
 
-function _render_task_action_panel(frm) {
+async function _render_task_action_panel(frm) {
 	const field = frm.get_field("task_actions_html");
 	if (!field) return;
 	const rows = frm.doc.aufgaben || [];
@@ -132,13 +132,28 @@ function _render_task_action_panel(frm) {
 		field.$wrapper.html(`<p class="text-muted">${__("Keine Aufgaben.")}</p>`);
 		return;
 	}
-	const items = rows.map((r) => _render_task_row(frm, r)).join("");
+	// Phase 13 B: Buttons kommen aus der Handler-Selbstbeschreibung (Server), nicht
+	// mehr aus einem Per-Typ-Switch im Client. Server liefert pro Aufgabe key/label/
+	// primary/dialog + disabled/reason (Lock-/Status-Gates).
+	let actions_by_row = {};
+	if (!frm.is_new()) {
+		try {
+			const r = await frappe.call({
+				method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_task_runtime_actions",
+				args: { docname: frm.doc.name },
+			});
+			actions_by_row = r.message || {};
+		} catch (err) {
+			console.error("get_task_runtime_actions failed", err);
+		}
+	}
+	const items = rows.map((r) => _render_task_row(frm, r, actions_by_row[r.name] || [])).join("");
 	field.$wrapper.html(`<div class="task-action-panel" style="margin-top:8px;">${items}</div>`);
 }
 
-function _render_task_row(frm, row) {
+function _render_task_row(frm, row, actions) {
 	const locked = row.pflicht && !_is_task_unlocked_client(frm, row);
-	const buttons = _buttons_for_task_type(row, locked);
+	const buttons = _render_action_buttons(row, actions);
 	const status = row.status || "Offen";
 	const status_class = status === "Erledigt" ? "green" : (locked ? "gray" : "blue");
 	const status_badge = `<span class="indicator-pill ${status_class}">${frappe.utils.escape_html(status)}</span>`;
@@ -175,66 +190,45 @@ function _is_task_unlocked_client(frm, row) {
 	return true;
 }
 
-function _buttons_for_task_type(row, locked) {
-	const rn = row.name;
-	const tt = row.task_type;
-	const btns = [];
-	const da = locked ? "disabled" : "";
-	if (row.status !== "Erledigt") {
-		btns.push(`<button class="btn btn-xs btn-default" data-action="set_status" data-row="${rn}" data-status="Erledigt" ${da}>${__("Erledigt")}</button>`);
-	} else {
-		btns.push(`<button class="btn btn-xs btn-default" data-action="set_status" data-row="${rn}" data-status="Offen">${__("Wieder oeffnen")}</button>`);
-	}
-	if (tt === "print_document") {
-		btns.push(`<button class="btn btn-xs btn-primary" data-action="generate_print" data-row="${rn}" ${da}>${__("PDF generieren")}</button>`);
-		btns.push(`<button class="btn btn-xs btn-default" data-action="confirm_filed" data-row="${rn}" ${da}>${__("Abheften bestaetigen")}</button>`);
-	}
-	if (tt === "paperless_export") {
-		btns.push(`<button class="btn btn-xs btn-primary" data-action="export_file" data-row="${rn}" ${da}>${__("Nach Paperless")}</button>`);
-	}
-	if (tt === "python_action") {
-		btns.push(`<button class="btn btn-xs btn-primary" data-action="run_python" data-row="${rn}" ${da}>${__("Ausfuehren")}</button>`);
-	}
-	if (tt === "create_linked_doc") {
-		btns.push(`<button class="btn btn-xs btn-primary" data-action="create_linked" data-row="${rn}" ${da}>${__("Neu anlegen")}</button>`);
-	}
-	return btns.join(" ");
+function _render_action_buttons(row, actions) {
+	if (!actions || !actions.length) return "";
+	return actions
+		.map((a) => {
+			const cls = a.primary ? "btn-primary" : "btn-default";
+			const disabled = a.disabled ? "disabled" : "";
+			const title = a.disabled && a.reason ? ` title="${frappe.utils.escape_html(a.reason)}"` : "";
+			const dialog = a.dialog ? ` data-dialog="${frappe.utils.escape_html(a.dialog)}"` : "";
+			return `<button class="btn btn-xs ${cls}" data-action-key="${frappe.utils.escape_html(a.key)}" data-row="${row.name}"${dialog}${title} ${disabled}>${frappe.utils.escape_html(a.label)}</button>`;
+		})
+		.join(" ");
 }
 
 function _wire_task_actions(frm) {
 	const field = frm.get_field("task_actions_html");
 	if (!field) return;
-	// off() entfernt frueher gebundene Handler beim Refresh
-	field.$wrapper.off("click.hv_task_actions").on("click.hv_task_actions", "button[data-action]", async (e) => {
+	// off() entfernt frueher gebundene Handler beim Refresh. Delegation am Wrapper
+	// ueberlebt das innerHTML-Re-Render der Buttons.
+	field.$wrapper.off("click.hv_task_actions").on("click.hv_task_actions", "button[data-action-key]", async (e) => {
 		const $btn = $(e.currentTarget);
-		const action = $btn.data("action");
+		const action_key = $btn.data("action-key");
 		const row_name = $btn.data("row");
-		const status = $btn.data("status");
-		await _dispatch_task_action(frm, action, row_name, status);
+		const dialog = $btn.data("dialog");
+		await _dispatch_task_action(frm, action_key, row_name, dialog);
 	});
 }
 
-async function _dispatch_task_action(frm, action, row_name, status) {
-	if (action === "create_linked") {
+async function _dispatch_task_action(frm, action_key, row_name, dialog) {
+	// Dialog-Actions (z.B. create_linked_doc) brauchen erst Nutzereingaben; der eigentliche
+	// run_task_action-Aufruf passiert dann im Dialog-primary_action.
+	if (dialog === "create_linked") {
 		return _open_create_linked_dialog(frm, row_name);
 	}
-	const action_map = {
-		set_status: { action: "set_task_status", payload: { row_name, status } },
-		generate_print: { action: "generate_print_task", payload: { row_name } },
-		confirm_filed: { action: "confirm_print_task", payload: { row_name, confirmed: 1 } },
-		export_file: { action: "export_file_task", payload: { row_name } },
-		run_python: { action: "run_python_task", payload: { row_name } },
-	};
-	const mapped = action_map[action];
-	if (!mapped) return;
 	try {
+		// Client schickt nur den semantischen key — Server mappt ihn (Allowlist) auf die
+		// Dispatch-Action und prueft die Gates erneut.
 		await frappe.call({
-			method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.dispatch_workflow_action",
-			args: {
-				docname: frm.doc.name,
-				action: mapped.action,
-				payload_json: JSON.stringify(mapped.payload),
-			},
+			method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.run_task_action",
+			args: { docname: frm.doc.name, row_name, action_key },
 			freeze: true,
 		});
 		await frm.reload_doc();
@@ -284,11 +278,12 @@ async function _open_create_linked_dialog(frm, row_name) {
 		primary_action: async (values) => {
 			try {
 				const r = await frappe.call({
-					method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.dispatch_workflow_action",
+					method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.run_task_action",
 					args: {
 						docname: frm.doc.name,
-						action: "create_linked_doc",
-						payload_json: JSON.stringify({ row_name, user_values: values }),
+						row_name,
+						action_key: "create_linked",
+						payload_json: JSON.stringify({ user_values: values }),
 					},
 					freeze: true,
 				});
