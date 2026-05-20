@@ -55,7 +55,9 @@
 	}
 
 	// Topologische Sortierung: Spalten = DAG-Tiefe, Zeilen = Index in Spalte.
-	function _topological_layout(schritte, schritt_io) {
+	// port_count = Anzahl Input-Ports pro Knoten (steuert den vertikalen Stride,
+	// damit hohe Knoten mit vielen payload-Ports nicht ueberlappen).
+	function _topological_layout(schritte, schritt_io, port_count) {
 		const step_keys = schritte.map((s) => (s.step_key || "").trim()).filter(Boolean);
 		const deps = {};
 		for (const sk of step_keys) deps[sk] = new Set();
@@ -107,8 +109,9 @@
 			layer_buckets[l] = layer_buckets[l] || [];
 			layer_buckets[l].push(sk);
 		}
-		const STRIDE_X = 280;
-		const STRIDE_Y = 140;
+		const STRIDE_X = 320;
+		// Knotenhoehe ~ Header (50px) + Ports * 22px. Stride mit Puffer, min 150.
+		const STRIDE_Y = Math.max(150, 70 + ((port_count || 0) + 1) * 22);
 		const OFFSET_X = 280; // Platz fuer Process-Inputs-Knoten links
 		const result = {};
 		for (const [layer_str, sks] of Object.entries(layer_buckets)) {
@@ -201,27 +204,41 @@
 		editor.start();
 		if (read_only) editor.editor_mode = "fixed";
 
-		// Auto-Layout fuer Knoten ohne editor_x
-		const need_auto_layout = schritte.some((s) => s.editor_x == null || s.editor_y == null);
-		const auto_pos = need_auto_layout ? _topological_layout(schritte, schritt_io) : {};
+		// Auto-Layout: Frappe Float-Felder defaulten auf 0 (NICHT null), daher gilt ein
+		// Knoten nur als manuell positioniert, wenn editor_x ODER editor_y != 0 ist.
+		// Sonst landen alle Knoten auf 0,0 (gestapelt). auto_pos wird immer berechnet
+		// (billig fuer kleine Graphen), damit auch einzelne ungesetzte Knoten Platz kriegen.
+		const _has_saved_pos = (s) => Boolean(Number(s.editor_x)) || Boolean(Number(s.editor_y));
 
-		// Alle in payload_field_specs deklarierten Felder, alphabetisch sortiert —
-		// das ist die Grundlage fuer die Input-Ports JEDES Tasks (Phase-10-Fix B):
-		// jeder Task bekommt einen Port pro Feld; "aktiv" wenn eine payload_input-Zeile
-		// existiert, sonst "open" (drag-droppable).
-		const all_input_fields = (payload_field_specs || [])
+		// all_input_fields = Union aus deklarierten payload_field_specs UND den in schritt_io
+		// tatsaechlich referenzierten payload-Feldern. Robust auch wenn payload_field_specs
+		// (noch) leer ist — dann zeigt der Editor trotzdem den realen Datenfluss.
+		const spec_fields = (payload_field_specs || [])
 			.map((s) => (s.fieldname || "").trim())
-			.filter(Boolean)
-			.slice()
-			.sort();
+			.filter(Boolean);
+		const io_payload_fields = schritt_io
+			.filter((r) => r.kind === "payload_input" || r.kind === "payload_output")
+			.map((r) => (r.target || "").trim())
+			.filter(Boolean);
+		const all_input_fields = Array.from(new Set([...spec_fields, ...io_payload_fields])).sort();
 
-		// Process-Inputs sammeln: alle payload_field_specs, die kein Task als output deklariert.
+		// auto_pos immer berechnen (billig); vertikaler Stride richtet sich nach Port-Zahl.
+		const auto_pos = _topological_layout(schritte, schritt_io, all_input_fields.length);
+
+		// Process-Inputs: Felder die irgendwo konsumiert/deklariert sind, aber von keinem
+		// Task als payload_output produziert werden (= externe Eingaben).
 		const output_fields = new Set(
-			schritt_io.filter((r) => r.kind === "payload_output").map((r) => r.target)
+			schritt_io.filter((r) => r.kind === "payload_output").map((r) => (r.target || "").trim())
 		);
-		const process_input_fields = (payload_field_specs || [])
-			.map((s) => (s.fieldname || "").trim())
-			.filter((f) => f && !output_fields.has(f));
+		const consumed_or_declared = new Set([
+			...spec_fields,
+			...schritt_io
+				.filter((r) => r.kind === "payload_input")
+				.map((r) => (r.target || "").trim()),
+		]);
+		const process_input_fields = Array.from(consumed_or_declared).filter(
+			(f) => f && !output_fields.has(f)
+		);
 
 		// Build port_meta_by_node — wichtigste Schicht fuer Edge-Lookup
 		const port_meta_by_node = {};
@@ -268,8 +285,9 @@
 				all_input_fields
 			);
 			port_meta_by_node[sk] = { ...meta, all_input_fields, payload_outputs };
-			const x = step.editor_x != null ? step.editor_x : (auto_pos[sk]?.x ?? 300);
-			const y = step.editor_y != null ? step.editor_y : (auto_pos[sk]?.y ?? 40);
+			const saved = _has_saved_pos(step);
+			const x = saved ? Number(step.editor_x) : (auto_pos[sk]?.x ?? 300);
+			const y = saved ? Number(step.editor_y) : (auto_pos[sk]?.y ?? 40);
 			const html = _node_html(step);
 			const id = editor.addNode(
 				sk,
