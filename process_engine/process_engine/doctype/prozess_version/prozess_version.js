@@ -370,9 +370,13 @@ async function _render_visual_editor(frm, fresh = false) {
 	// frappe.model (dirty + refresh), Config-Schema kommt vom Server, Custom-Widgets
 	// werden weiterhin ueber window.process_engine.config_widgets aufgeloest.
 	window.ProcessEditorReact.mount(container, {
-		schritte: frm.doc.schritte || [],
-		schritt_io: frm.doc.schritt_io || [],
-		payload_field_specs: frm.doc.payload_field_specs || [],
+		// FRISCHE Array-Referenzen (slice): frappe.model.add_child & Co. mutieren die
+		// Child-Tabellen IN PLACE (gleiche Referenz). Da der React-Root jetzt wiederverwendet
+		// wird, erkennen die useMemo (z.B. deriveEdges) eine In-Place-Mutation sonst nicht ->
+		// neue Kante/Knoten erschienen erst nach einem Drag (das eine andere Referenz erzeugt).
+		schritte: (frm.doc.schritte || []).slice(),
+		schritt_io: (frm.doc.schritt_io || []).slice(),
+		payload_field_specs: (frm.doc.payload_field_specs || []).slice(),
 		versionLabel: frm.doc.titel || frm.doc.name,
 		versionKey: frm.doc.version_key || "",
 		isActive: !!frm.doc.is_active,
