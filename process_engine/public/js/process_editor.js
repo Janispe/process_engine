@@ -184,15 +184,19 @@
 		`;
 	}
 
+	// Klassen-Token komplett escapen (nicht nur Teile davon), sonst zerbricht ein Token wie
+	// "node_out_node-3".
+	function _pe_esc(s) {
+		return window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s);
+	}
+
 	// Taggt eine Drawflow-Verbindung als Daten- bzw. Reihenfolge-Kante.
 	// Drawflow vergibt der Connection-SVG die Klassen
 	//   connection node_out_node-<srcId> node_in_node-<dstId> <srcClass> <dstClass>
-	// Wir escapen jedes Klassen-Token komplett (CSS.escape), nicht nur Teile davon, sonst
-	// zerbricht ein Token wie "node_out_node-3". Findet der Selector nichts (z.B. Drawflow-
-	// Upgrade), ist es ein stiller No-op — die Kante bleibt neutral statt zu werfen.
+	// Findet der Selector nichts (z.B. Drawflow-Upgrade), ist es ein stiller No-op — die
+	// Kante bleibt neutral statt zu werfen.
 	function _classify_edge(container, srcId, dstId, srcClass, dstClass, kind) {
-		const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s));
-		const cls = (t) => "." + esc(t);
+		const cls = (t) => "." + _pe_esc(t);
 		const sel =
 			".connection" +
 			cls("node_out_node-" + srcId) +
@@ -206,6 +210,31 @@
 			return;
 		}
 		if (el) el.classList.add(kind === "order" ? "pe-edge-order" : "pe-edge-data");
+	}
+
+	// Aktualisiert die "ungenutzt"-Markierung eines Process-Inputs-Ports nach einem Live-Edit
+	// (process_input -> payload_input erstellt/entfernt). Quelle der Wahrheit: ob der Port noch
+	// IRGENDEINE Connection hat (ein externes Feld kann mehrere Consumer haben). Deferred via
+	// setTimeout(0), damit Drawflow das DOM beim Entfernen schon aktualisiert hat. on_create_edge
+	// /on_delete_edge loesen keinen vollen Re-Render aus, daher dieses gezielte DOM-Update.
+	function _refresh_pi_port_unused(container, piId, outputClass) {
+		if (piId == null) return;
+		setTimeout(() => {
+			const nodeSel = "#" + _pe_esc("node-" + piId);
+			const port = container.querySelector(`${nodeSel} .outputs > .output.${_pe_esc(outputClass)}`);
+			if (!port) return;
+			const used =
+				container.querySelectorAll(`.connection.${_pe_esc("node_out_node-" + piId)}.${_pe_esc(outputClass)}`).length > 0;
+			port.classList.toggle("pe-port-unused", !used);
+			const m = /(\d+)$/.exec(outputClass);
+			const kvs = container.querySelectorAll(`${nodeSel} .pe-node-body .pe-kv`);
+			const kv = m ? kvs[parseInt(m[1], 10) - 1] : null;
+			if (kv) kv.classList.toggle("pe-input-unused", !used);
+			// Tooltip konsistent halten (initial setzt nur ungenutzte Ports einen title).
+			const field = kv ? kv.textContent.trim() : "";
+			if (used) port.removeAttribute("title");
+			else if (field) port.setAttribute("title", `process_input (nicht gelesen): ${field}`);
+		}, 0);
 	}
 
 	ns.render = async function ({
@@ -556,6 +585,8 @@
 					);
 				dst_meta.active = true;
 				_set_input_port_empty(info.input_id, info.input_class, false);
+				// PI-Port ist jetzt gelesen -> "ungenutzt"-Markierung entfernen.
+				_refresh_pi_port_unused(container, info.output_id, info.output_class);
 				return;
 			}
 			// step_done → step_input
@@ -605,6 +636,8 @@
 					);
 				dst_meta.active = false;
 				_set_input_port_empty(info.input_id, info.input_class, true);
+				// War das der letzte Consumer dieses Feldes -> PI-Port wieder als "ungenutzt".
+				_refresh_pi_port_unused(container, info.output_id, info.output_class);
 				return;
 			}
 			// step_done → step_input
