@@ -341,11 +341,18 @@ async function _render_visual_editor(frm) {
 			${is_locked ? "" : `<button class="btn btn-xs pe-add-step">+ ${__("Schritt")}</button>`}
 			<button class="btn btn-xs pe-manage-fields">${__("Felder")}</button>
 		</div>`;
+	// Legende: zwei Kantenarten (Daten/Reihenfolge) + ungenutzter Input-Port. Rein statisch.
+	const legend_html = `<div class="pe-legend">
+			<span><span class="pe-legend-swatch pe-legend-data"></span>${__("Daten (liest Wert)")}</span>
+			<span><span class="pe-legend-swatch pe-legend-order"></span>${__("Reihenfolge (kommt nach)")}</span>
+			<span><span class="pe-legend-swatch pe-legend-unused"></span>${__("Input ungenutzt")}</span>
+		</div>`;
 	$wrapper.html(`
 		<div class="${shell_class}" style="margin-top: ${is_locked ? "32px" : "0"};">
 			${toolbar_html}
 			<div class="pe-canvas"></div>
 			<div class="pe-inspector"></div>
+			${legend_html}
 		</div>
 	`);
 	const canvas = $wrapper.find(".pe-canvas").get(0);

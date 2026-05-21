@@ -184,6 +184,30 @@
 		`;
 	}
 
+	// Taggt eine Drawflow-Verbindung als Daten- bzw. Reihenfolge-Kante.
+	// Drawflow vergibt der Connection-SVG die Klassen
+	//   connection node_out_node-<srcId> node_in_node-<dstId> <srcClass> <dstClass>
+	// Wir escapen jedes Klassen-Token komplett (CSS.escape), nicht nur Teile davon, sonst
+	// zerbricht ein Token wie "node_out_node-3". Findet der Selector nichts (z.B. Drawflow-
+	// Upgrade), ist es ein stiller No-op — die Kante bleibt neutral statt zu werfen.
+	function _classify_edge(container, srcId, dstId, srcClass, dstClass, kind) {
+		const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s));
+		const cls = (t) => "." + esc(t);
+		const sel =
+			".connection" +
+			cls("node_out_node-" + srcId) +
+			cls("node_in_node-" + dstId) +
+			cls(srcClass) +
+			cls(dstClass);
+		let el = null;
+		try {
+			el = container.querySelector(sel);
+		} catch (e) {
+			return;
+		}
+		if (el) el.classList.add(kind === "order" ? "pe-edge-order" : "pe-edge-data");
+	}
+
 	ns.render = async function ({
 		container,
 		schritte,
@@ -343,6 +367,7 @@
 			}
 			try {
 				editor.addConnection(src_node_id, dst_node_id, src_class, dst_class);
+				_classify_edge(container, src_node_id, dst_node_id, src_class, dst_class, "data");
 			} catch (e) {
 				console.warn("process_editor: addConnection failed", e);
 			}
@@ -358,6 +383,7 @@
 			const dst_class = `input_${all_input_fields.length + 1}`;
 			try {
 				editor.addConnection(src_node_id, dst_node_id, src_class, dst_class);
+				_classify_edge(container, src_node_id, dst_node_id, src_class, dst_class, "order");
 			} catch (e) {
 				console.warn("process_editor: addConnection (step_input) failed", e);
 			}
@@ -400,6 +426,34 @@
 					el.classList.add("pe-port-generic");
 				}
 			});
+		}
+
+		// 3d. Process-Inputs-Ports: ungelesene Inputs (kein Schritt fuehrt sie als
+		// payload_input) markieren — sie bleiben sichtbar (Drag-to-wire), aber als
+		// "verfuegbar, ungenutzt" gekennzeichnet statt als lose Enden. Reihenfolge der
+		// Output-Ports + Body-.pe-kv entspricht sorted_pi_fields.
+		const pi_id = node_id_by_step[PROCESS_INPUTS_NODE];
+		if (pi_id != null) {
+			const consumed_inputs = new Set(
+				schritt_io
+					.filter((r) => r.kind === "payload_input")
+					.map((r) => (r.target || "").trim())
+					.filter(Boolean)
+			);
+			const pi_node_el = container.querySelector(`#node-${pi_id}`);
+			if (pi_node_el) {
+				pi_node_el.querySelectorAll(".outputs > .output").forEach((el, i) => {
+					const f = sorted_pi_fields[i];
+					if (f && !consumed_inputs.has(f)) {
+						el.classList.add("pe-port-unused");
+						el.setAttribute("title", `process_input (nicht gelesen): ${f}`);
+					}
+				});
+				pi_node_el.querySelectorAll(".pe-node-body .pe-kv").forEach((el, i) => {
+					const f = sorted_pi_fields[i];
+					if (f && !consumed_inputs.has(f)) el.classList.add("pe-input-unused");
+				});
+			}
 		}
 
 		// 4. Event-Handler
@@ -472,6 +526,7 @@
 					);
 					return;
 				}
+				_classify_edge(container, info.output_id, info.input_id, info.output_class, info.input_class, "data");
 				on_create_edge &&
 					on_create_edge(
 						{ kind: "payload_output", step_key: src_step, target: src_meta.target },
@@ -493,6 +548,7 @@
 					);
 					return;
 				}
+				_classify_edge(container, info.output_id, info.input_id, info.output_class, info.input_class, "data");
 				on_create_edge &&
 					on_create_edge(
 						{ kind: "process_input", step_key: PROCESS_INPUTS_NODE, target: src_meta.target },
@@ -504,6 +560,7 @@
 			}
 			// step_done → step_input
 			if (src_meta.kind === "step_done" && dst_meta.kind === "step_input") {
+				_classify_edge(container, info.output_id, info.input_id, info.output_class, info.input_class, "order");
 				on_create_edge &&
 					on_create_edge(
 						{ kind: "step_done", step_key: src_step },
