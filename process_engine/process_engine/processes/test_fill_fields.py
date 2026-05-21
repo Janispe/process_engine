@@ -51,7 +51,7 @@ class TestFillFieldsHandler(FrappeTestCase):
 
 			# not_null auf leerem Feld (reference_name, kein Default) -> nicht erfuellt + run_action wirft
 			row_missing = _FakeRow({
-				"source_field": "obj", "source_doctype": "ToDo",
+				"source_field": "obj", "input_doctype": "ToDo",
 				"fields": [{"fieldname": "reference_name", "not_null": 1}],
 			})
 			self.assertFalse(h.is_fulfilled(None, doc, row_missing).fulfilled)
@@ -61,7 +61,7 @@ class TestFillFieldsHandler(FrappeTestCase):
 
 			# not_null auf gesetztem Feld (description) -> erfuellt + run_action schliesst ab
 			row_ok = _FakeRow({
-				"source_field": "obj", "source_doctype": "ToDo",
+				"source_field": "obj", "input_doctype": "ToDo",
 				"fields": [{"fieldname": "description", "not_null": 1}],
 			})
 			self.assertTrue(h.is_fulfilled(None, doc, row_ok).fulfilled)
@@ -78,7 +78,7 @@ class TestFillFieldsHandler(FrappeTestCase):
 			doc = _FakeDoc({"obj": todo.name})
 			# reference_name leer, aber not_null=0 -> nicht erzwungen -> erfuellt
 			row = _FakeRow({
-				"source_field": "obj", "source_doctype": "ToDo",
+				"source_field": "obj", "input_doctype": "ToDo",
 				"fields": [{"fieldname": "reference_name", "not_null": 0}],
 			})
 			self.assertTrue(h.is_fulfilled(None, doc, row).fulfilled)
@@ -91,7 +91,7 @@ class TestFillFieldsHandler(FrappeTestCase):
 			h = FillFieldsTaskHandler()
 			doc = _FakeDoc({"obj": todo.name})
 			row = _FakeRow({
-				"source_field": "obj", "source_doctype": "ToDo",
+				"source_field": "obj", "input_doctype": "ToDo",
 				"fields": [{"fieldname": "date", "not_null": 1}],
 			})
 			actions = h.runtime_actions(None, doc, row)
@@ -139,7 +139,7 @@ class TestFillFieldsInputSync(FrappeTestCase):
 				"step_key": "fill", "titel": "Ausfuellen", "task_type": TASK_TYPE_FILL_FIELDS,
 				"pflicht": 1, "sichtbar_fuer_prozess_typ": "Beide", "reihenfolge": 10,
 				"konfig_json": json.dumps({
-					"source_field": "obj", "source_doctype": "ToDo",
+					"source_field": "obj", "input_doctype": "ToDo",
 					"fields": [{"fieldname": "date", "not_null": 1}],
 				}),
 			}],

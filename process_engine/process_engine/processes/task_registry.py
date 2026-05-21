@@ -775,9 +775,10 @@ class FillFieldsTaskHandler(BaseTaskHandler):
 	"""Aufgabe: an einem Objekt (= Input des Knotens) bestimmte Felder ausfuellen.
 
 	Config:
-	  - source_field: Payload-Link-Feld = das Objekt (Input des Knotens)
-	  - source_doctype: Ziel-Doctype (vom fill_fields_picker aus der Feld-Spec gesetzt)
+	  - input_doctype: Doctype, auf dem gefuellt wird (in der Config gewaehlt)
 	  - fields: [{fieldname, not_null}] — auszufuellende Felder; not_null=1 -> Pflicht fuer Abschluss
+	  - source_field: Payload-Link-Feld = das konkrete Objekt. Wird NICHT im Dropdown gesetzt,
+	    sondern durch Verdrahten im Editor (Payload-Feld -> Objekt-Input-Port des Knotens).
 
 	Laufzeit: 'Objekt oeffnen' (Navigation) + 'Abschliessen (pruefen)' -> run_action prueft, ob
 	alle not_null-Felder am Objekt befuellt sind, sonst Fehler. is_fulfilled nutzt dieselbe Pruefung
@@ -787,19 +788,18 @@ class FillFieldsTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_FILL_FIELDS
 
 	def config_schema(self) -> dict | None:
+		# source_field wird nicht hier gewaehlt, sondern im Canvas verdrahtet (Objekt-Input-Port).
 		return {
 			"fields": [
-				{"key": "source_field", "label": _("Objekt (Payload-Link-Feld)"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+				{"key": "input_doctype", "label": _("Objekt-Doctype"), "fieldtype": "Link", "options": "DocType", "reqd": 1},
 				{"key": "fields", "label": _("Auszufuellende Felder"), "fieldtype": "Data", "widget": "fill_fields_picker"},
 			]
 		}
 
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
-		if not (config.get("source_field") or "").strip():
-			frappe.throw(_("fill_fields erfordert source_field (das Objekt-Feld)."))
-		if not (config.get("source_doctype") or "").strip():
-			frappe.throw(_("fill_fields erfordert source_doctype (vom Feld-Picker gesetzt)."))
+		if not (config.get("input_doctype") or "").strip():
+			frappe.throw(_("fill_fields erfordert input_doctype (Objekt-Doctype)."))
 		if not self._config_fields(config):
 			frappe.throw(_("fill_fields erfordert mindestens ein auszufuellendes Feld."))
 
@@ -832,7 +832,7 @@ class FillFieldsTaskHandler(BaseTaskHandler):
 
 	def _missing_required(self, config: dict, name: str) -> list[str]:
 		"""not_null-Felder, die am Objekt (noch) leer sind."""
-		doctype = (config.get("source_doctype") or "").strip()
+		doctype = (config.get("input_doctype") or "").strip()
 		required = [f["fieldname"] for f in self._config_fields(config) if f["not_null"]]
 		if not required:
 			return []
@@ -868,7 +868,7 @@ class FillFieldsTaskHandler(BaseTaskHandler):
 				"_dispatch": "set_task_status", "_params": {"status": "Offen"},
 			}]
 		actions = []
-		doctype = (config.get("source_doctype") or "").strip()
+		doctype = (config.get("input_doctype") or "").strip()
 		name = self._object_name(doc, config)
 		if doctype and name:
 			actions.append({

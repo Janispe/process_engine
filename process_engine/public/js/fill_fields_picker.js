@@ -54,23 +54,17 @@
 		function rebuild() {
 			$box.empty();
 			const cfg = ctx.cfg || {};
-			const sourceField = (cfg.source_field || "").trim();
-			if (!sourceField) {
-				$box.append('<div class="ffp-hint">Bitte zuerst das <b>Objekt (Payload-Link-Feld)</b> oben wählen.</div>');
+			const doctype = (cfg.input_doctype || "").trim();
+			if (!doctype) {
+				$box.append('<div class="ffp-hint">Bitte zuerst den <b>Objekt-Doctype</b> oben wählen.</div>');
 				addReload();
 				return;
 			}
-			const src = sourceDoctype(frm, sourceField);
-			if (!src.doctype) {
-				$box.append(`<div class="ffp-hint ffp-warn">${frappe.utils.escape_html(src.reason)}</div>`);
-				addReload();
-				return;
-			}
-			$box.append(`<div class="ffp-head">Objekt: <code>${frappe.utils.escape_html(src.doctype)}</code> · Felder zum Ausfüllen wählen</div>`);
+			$box.append(`<div class="ffp-head">Objekt: <code>${frappe.utils.escape_html(doctype)}</code> · Felder zum Ausfüllen wählen</div>`);
 			const $list = $('<div class="ffp-list">Lade Felder…</div>').appendTo($box);
 
-			frappe.model.with_doctype(src.doctype, () => {
-				const meta = frappe.get_meta(src.doctype);
+			frappe.model.with_doctype(doctype, () => {
+				const meta = frappe.get_meta(doctype);
 				const fields = (meta && meta.fields ? meta.fields : []).filter(settable);
 				const current = {};
 				for (const f of (cfg.fields || [])) if (f && f.fieldname) current[f.fieldname] = !!f.not_null;
@@ -103,9 +97,7 @@
 							out.push({ fieldname: $r.data("fn"), not_null: $r.find(".ffp-notnull").is(":checked") ? 1 : 0 });
 						}
 					});
-					const patch = { source_doctype: src.doctype, fields: out };
-					if (typeof ctx.commitMany === "function") ctx.commitMany(patch);
-					else { ctx.commit("source_doctype", src.doctype); ctx.commit("fields", out); }
+					ctx.commit("fields", out);
 				}
 				$list.on("change", ".ffp-include", function () {
 					const $r = $(this).closest(".ffp-row");

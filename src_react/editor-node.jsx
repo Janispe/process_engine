@@ -43,6 +43,8 @@ export function getPortPos(portId, ports, density) {
   const w = getNodeWidth(density);
   if (portId === "step-in")  return { x: 0, y: HEADER_H / 2, side: "left",  kind: "step" };
   if (portId === "step-out") return { x: w, y: HEADER_H / 2, side: "right", kind: "step" };
+  // fill_fields: Objekt-Input-Port (Platzhalter, solange keine Quelle verdrahtet ist).
+  if (portId === "obj-in")   return { x: 0, y: HEADER_H + 18, side: "left", kind: "obj" };
   const sep = portId.indexOf(":");
   const side = portId.slice(0, sep);
   const field = portId.slice(sep + 1);
@@ -181,6 +183,26 @@ export function Node({
           onMouseUp={(e) => { e.stopPropagation(); onPortMouseUp && onPortMouseUp(e, node.step_key, "step-out"); }}
         />
       </span>
+
+      {node.task_type === "fill_fields" && ports.payloadIn.length === 0 && (() => {
+        let dt = "";
+        try { dt = (JSON.parse(node.konfig_json || "{}").input_doctype || ""); } catch (_) {}
+        const objHot = hotPort && hotPort.node === node.step_key && hotPort.port === "obj-in";
+        return (
+          <span className="port-anchor obj-in-anchor" style={{ position: "absolute", left: 0, top: HEADER_H + 18 }}>
+            <span
+              className={`dot${objHot ? " hot" : ""}${validTarget === "valid" ? " valid-target" : ""}`}
+              style={{ position: "absolute", left: -7, top: -7, width: 14, height: 14, borderRadius: "50%", background: "var(--surface)", border: "2px dashed var(--accent, #6366f1)", cursor: "crosshair", zIndex: 3 }}
+              title={`Objekt-Input — ziehe ein Payload-Link-Feld${dt ? " (" + dt + ")" : ""} hierher`}
+              onMouseDown={(e) => { e.stopPropagation(); onPortMouseDown && onPortMouseDown(e, node.step_key, "obj-in"); }}
+              onMouseUp={(e) => { e.stopPropagation(); onPortMouseUp && onPortMouseUp(e, node.step_key, "obj-in"); }}
+            />
+            <span style={{ position: "absolute", left: 10, top: -7, fontSize: 10, lineHeight: "14px", color: "var(--accent, #6366f1)", whiteSpace: "nowrap", pointerEvents: "none" }}>
+              ← Objekt{dt ? ": " + dt : ""}
+            </span>
+          </span>
+        );
+      })()}
 
       <div
         className="node-header"
