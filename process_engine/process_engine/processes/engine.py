@@ -356,6 +356,8 @@ class ProcessEngine:
 		self._validate_bypass_fields(doc)
 		self._ensure_task_detail_rows(doc)
 		self._sync_task_fulfillment_state(doc)
+		self._run_auto_steps(doc)
+		self._sync_task_fulfillment_state(doc)
 		self._sync_runtime_timestamps(doc)
 		if (doc.get(self.config.status_fieldname) or "").strip() in {STATUS_ABGESCHLOSSEN, STATUS_ABGESCHLOSSEN_BYPASS}:
 			self.validate_completion(doc)
@@ -857,6 +859,44 @@ class ProcessEngine:
 					row.status = TODO_STATUS_ERLEDIGT
 				elif (row.status or "").strip() == TODO_STATUS_ERLEDIGT:
 					row.status = TODO_STATUS_OFFEN
+
+	def _run_auto_steps(self, doc: Document) -> None:
+		"""Fuehrt is_auto-Schritte (z.B. derive) automatisch aus, sobald sie freigegeben
+		sind. Fixpunkt-Schleife: der Output eines Auto-Schritts kann den naechsten
+		freischalten. Laeuft in validate() VOR dem Save, mutiert nur doc/Row in-memory
+		(der laufende Save persistiert) — keine verschachtelten Saves.
+		"""
+		# Gleiche Guard wie _sync_task_fulfillment_state: vor dem ersten DB-Insert ist die
+		# Live-Config einer Aufgabe (extract_task_config ueber die Prozess Version) nicht
+		# aufloesbar.
+		if doc.is_new() and not frappe.db.exists(doc.doctype, doc.name):
+			return
+		rows = doc.get(self.config.task_fieldname) or []
+		progressed, guard = True, 0
+		while progressed and guard < 50:
+			progressed, guard = False, guard + 1
+			for row in rows:
+				handler = self._get_task_handler(row)
+				if not getattr(handler, "is_auto", False):
+					continue
+				if (row.status or "").strip() == TODO_STATUS_ERLEDIGT:
+					continue
+				if not self._is_task_unlocked(doc, row):
+					continue
+				try:
+					handler.run_action(self.config.task_handler_context, doc, row, {})
+				except Exception:
+					frappe.log_error(
+						title="Auto-Run-Schritt fehlgeschlagen",
+						message=frappe.get_traceback(),
+					)
+					continue
+				# run_action setzt row.status=Erledigt + payload_set; erfuellt-Flag fuer die
+				# Unlock-Kette des naechsten Auto-Schritts nachziehen.
+				row.erfuellt = 1
+				row.erfuellt_am = row.erfuellt_am or now_datetime()
+				row.erfuellt_von = row.erfuellt_von or frappe.session.user
+				progressed = True
 
 	def _sync_runtime_timestamps(self, doc: Document) -> None:
 		status = (doc.status or "").strip()

@@ -46,6 +46,7 @@ TASK_TYPE_PRINT_DOCUMENT = "print_document"
 TASK_TYPE_PAPERLESS_EXPORT = "paperless_export"
 TASK_TYPE_EMAIL_DRAFT = "email_draft"
 TASK_TYPE_CREATE_LINKED_DOC = "create_linked_doc"
+TASK_TYPE_DERIVE = "derive"
 
 SUPPORTED_TASK_TYPES = (
 	TASK_TYPE_MANUAL_CHECK,
@@ -55,6 +56,7 @@ SUPPORTED_TASK_TYPES = (
 	TASK_TYPE_PAPERLESS_EXPORT,
 	TASK_TYPE_EMAIL_DRAFT,
 	TASK_TYPE_CREATE_LINKED_DOC,
+	TASK_TYPE_DERIVE,
 )
 
 
@@ -562,6 +564,72 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 		return {"created_doctype": target_doctype, "created_name": new_doc.name}
 
 
+class DeriveTaskHandler(BaseTaskHandler):
+	"""Auto-Run-Node: leitet einen Wert aus einem Payload-Objekt ueber einen Pfad ab.
+
+	Config (konfig_json):
+	  - source_field: Payload-Feld, das den Quell-Docname haelt (Link-Feld-Spec)
+	  - source_doctype: Doctype des Quell-Objekts (vom Pfad-Picker aus der Feld-Spec gesetzt)
+	  - path: Punkt-Pfad im Quell-Doctype (z.B. "wohnung" oder "wohnung.immobilie"),
+	    virtuell-bewusst aufgeloest (siehe path_resolver).
+	  - store_in_payload_field: Payload-Feld fuer das Ergebnis
+
+	Laeuft automatisch (kein Mensch): die Engine fuehrt run_action aus, sobald das
+	source_field im Payload vorhanden ist (Auto-Run). `is_auto` markiert das fuer den
+	Run-/Abschluss-Pfad; im UI erscheint kein „Erledigt"-Klick.
+	"""
+
+	task_type = TASK_TYPE_DERIVE
+	is_auto = True
+
+	def config_schema(self) -> dict | None:
+		return {
+			"fields": [
+				{"key": "source_field", "label": _("Quelle (Payload-Feld)"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+				{"key": "path", "label": _("Pfad"), "fieldtype": "Data", "widget": "path_picker", "reqd": 1},
+				{"key": "store_in_payload_field", "label": _("Ergebnis in Payload-Feld"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+			]
+		}
+
+	def validate_config(self, step_or_task) -> None:
+		config = extract_task_config(step_or_task)
+		for key in ("source_field", "path", "store_in_payload_field", "source_doctype"):
+			if not (config.get(key) or "").strip():
+				frappe.throw(_("derive erfordert '{0}' in der Konfig.").format(key))
+
+	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
+		# Auto-Run-Knoten: kein manueller "Erledigt"-Klick. Die Engine fuehrt run_action
+		# automatisch aus, sobald die Inputs vorhanden sind (_run_auto_steps).
+		return []
+
+	def run_action(self, context: TaskHandlerContext, doc: Document, task_row, payload: dict | None = None) -> dict:
+		# Lazy-Import: path_resolver ist ein Leaf-Modul; lokaler Import vermeidet jede
+		# Import-Reihenfolge-Abhaengigkeit beim App-Boot.
+		from process_engine.process_engine.processes.path_resolver import resolve_path
+
+		config = extract_task_config(task_row)
+		source_field = (config.get("source_field") or "").strip()
+		source_doctype = (config.get("source_doctype") or "").strip()
+		path = (config.get("path") or "").strip()
+		out_field = (config.get("store_in_payload_field") or "").strip()
+		if not (source_field and source_doctype and path and out_field):
+			frappe.throw(_("derive-Task ist nicht korrekt konfiguriert."))
+
+		if hasattr(doc, "payload") and callable(doc.payload):
+			source_name = doc.payload(source_field)
+		else:
+			source_name = doc.get(source_field)
+		value = resolve_path(source_doctype, (source_name or ""), path)
+
+		if hasattr(doc, "payload_set") and callable(doc.payload_set):
+			doc.payload_set(out_field, value)
+		else:
+			doc.set(out_field, value)
+		task_row.status = "Erledigt"
+		task_row.result_json = frappe.as_json({"derived": value, "field": out_field, "path": path})
+		return {"field": out_field, "value": value}
+
+
 class TaskHandlerRegistry:
 	def __init__(self):
 		self._handlers = {
@@ -570,6 +638,7 @@ class TaskHandlerRegistry:
 			TASK_TYPE_PAPERLESS_EXPORT: PaperlessExportTaskHandler(),
 			TASK_TYPE_PRINT_DOCUMENT: PrintDocumentTaskHandler(),
 			TASK_TYPE_CREATE_LINKED_DOC: CreateLinkedDocTaskHandler(),
+			TASK_TYPE_DERIVE: DeriveTaskHandler(),
 		}
 
 	def get_handler(self, *, handler_key: str | None = None, task_type: str | None = None, context: TaskHandlerContext | None = None) -> BaseTaskHandler:

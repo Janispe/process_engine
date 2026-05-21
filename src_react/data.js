@@ -10,6 +10,7 @@ export const TASK_TYPES = {
   paperless_export: { label: "Paperless Export",   hue: 180, chroma: 0.13, glyph: "→" },
   email_draft:      { label: "Email Draft",        hue: 220, chroma: 0.13, glyph: "✉" },
   create_linked_doc:{ label: "Create Linked Doc",  hue: 335, chroma: 0.13, glyph: "+" },
+  derive:           { label: "Ableitung (Auto)",   hue: 150, chroma: 0.13, glyph: "ƒ" },
 };
 
 export const TASK_TYPE_KEYS = Object.keys(TASK_TYPES);
