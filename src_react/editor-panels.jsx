@@ -64,6 +64,13 @@ function CustomConfigWidget({ widgetName, frm, step, def, cfg, readOnly, onPatch
         const next = { ...(liveRef.current.cfg || {}), [key]: value };
         liveRef.current.onPatchKonfig(JSON.stringify(next));
       },
+      // Mehrere Keys atomar schreiben — zwei aufeinanderfolgende commit()-Aufrufe
+      // wuerden sonst beide das (noch nicht re-gerenderte) alte cfg lesen und sich
+      // gegenseitig ueberschreiben.
+      commitMany(patch) {
+        const next = { ...(liveRef.current.cfg || {}), ...(patch || {}) };
+        liveRef.current.onPatchKonfig(JSON.stringify(next));
+      },
     };
     try {
       widgetFn(ctx);
