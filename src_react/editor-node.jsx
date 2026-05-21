@@ -23,7 +23,29 @@ export function getNodeWidth(density) {
   return density === "compact" ? NODE_W_COMPACT : NODE_W;
 }
 
-export function getNodePorts(stepKey, io) {
+// Erkennt {{ payload.X }} -> Quell-Feld X eines gemappten Ziel-Felds.
+export const PAYLOAD_TPL_RE = /\{\{\s*payload\.([a-zA-Z0-9_]+)\s*\}\}/;
+
+// Liest die Mapping-Inputs eines create_linked_doc-Schritts: pro Ziel-Feld (cfg.map_inputs)
+// ein {target, source}, wobei source aus prefill_mapping[target] = "{{ payload.X }}" stammt
+// (leer = noch nicht belegt).
+export function getMapInputs(step) {
+  if (!step || step.task_type !== "create_linked_doc") return [];
+  let cfg = {};
+  try { cfg = JSON.parse(step.konfig_json || "{}") || {}; } catch (_) { cfg = {}; }
+  const prefill = (cfg.prefill_mapping && typeof cfg.prefill_mapping === "object") ? cfg.prefill_mapping : {};
+  const targets = Array.isArray(cfg.map_inputs) ? cfg.map_inputs.slice() : [];
+  // Backward-compat: bestehende {{ payload.X }}-Mappings ohne map_inputs trotzdem als Input zeigen.
+  for (const [t, v] of Object.entries(prefill)) {
+    if (PAYLOAD_TPL_RE.test(String(v)) && !targets.includes(t)) targets.push(t);
+  }
+  return targets.map((t) => {
+    const m = String(prefill[t] || "").match(PAYLOAD_TPL_RE);
+    return { target: t, source: m ? m[1] : "" };
+  });
+}
+
+export function getNodePorts(stepKey, io, step) {
   const payloadIn = [];
   const payloadOut = [];
   const stepIn = [];
@@ -33,11 +55,18 @@ export function getNodePorts(stepKey, io) {
     else if (r.kind === "payload_output") payloadOut.push(r.target);
     else if (r.kind === "step_input") stepIn.push(r.target);
   }
-  return { payloadIn, payloadOut, stepIn };
+  // create_linked_doc: die Inputs sind die gemappten Ziel-Felder (map_inputs), nicht die
+  // generischen payload_input-Ports — die Quelle steht in der Ziel-Zeile (min:<target>).
+  const mapIn = getMapInputs(step);
+  if (mapIn.length || (step && step.task_type === "create_linked_doc")) {
+    return { payloadIn: [], payloadOut, stepIn, mapIn };
+  }
+  return { payloadIn, payloadOut, stepIn, mapIn: [] };
 }
 
 export function getNodeHeight(ports) {
-  const rows = Math.max(1, ports.payloadIn.length, ports.payloadOut.length);
+  const inCount = ports.payloadIn.length + (ports.mapIn ? ports.mapIn.length : 0);
+  const rows = Math.max(1, inCount, ports.payloadOut.length);
   const bodyH = COL_PAD_TOP + COL_LABEL_H + rows * ROW_H + 10;
   return HEADER_H + bodyH + FOOTER_H;
 }
@@ -50,6 +79,13 @@ export function getPortPos(portId, ports, density) {
   // Objekt-Input-Port (fill_fields/derive): liegt auf derselben Hoehe wie die erste Input-Zeile,
   // damit Dot, Kante und Vorschau exakt mit der Inputs-Spalte fluchten.
   if (portId === "obj-in")   return { x: 0, y: HEADER_H + COL_PAD_TOP + COL_LABEL_H + ROW_H / 2, side: "left", kind: "obj" };
+  // Mapping-Input (create_linked_doc): eine Zeile pro gemapptem Ziel-Feld, linke Spalte.
+  if (portId.startsWith("min:")) {
+    const t = portId.slice(4);
+    const idx = (ports.mapIn || []).findIndex((m) => m.target === t);
+    const y = HEADER_H + COL_PAD_TOP + COL_LABEL_H + (Math.max(0, idx) * ROW_H) + ROW_H / 2;
+    return { x: 0, y, side: "left", kind: "map", target: t };
+  }
   const sep = portId.indexOf(":");
   const side = portId.slice(0, sep);
   const field = portId.slice(sep + 1);
@@ -101,6 +137,7 @@ export function Node({
   onSelect,
   onPortMouseDown,
   onPortMouseUp,
+  onPortMouseEnter,
   hotPort,
   validTarget,
 }) {
@@ -154,7 +191,30 @@ export function Node({
             <span className="port-name">← Objekt{objDt ? ": " + objDt : ""}</span>
           </div>
         )}
-        {list.length === 0 && !(side === "left" && objInActive) && (
+        {/* create_linked_doc: ein Input-Port pro gemapptem Ziel-Feld; Quelle per Drag belegen. */}
+        {side === "left" && (ports.mapIn || []).map((m) => {
+          const portId = `min:${m.target}`;
+          const isHot = hotPort && hotPort.node === node.step_key && hotPort.port === portId;
+          const bound = !!m.source;
+          return (
+            <div
+              className={`port left map-in${isHot ? " hot" : ""}${bound ? "" : " unbound"}`}
+              key={portId}
+              title={bound ? `${m.target} ← payload.${m.source}` : `${m.target} — Quelle hierher ziehen`}
+              onMouseEnter={() => onPortMouseEnter && onPortMouseEnter(node.step_key, portId)}
+              onMouseUp={(e) => { e.stopPropagation(); onPortMouseUp && onPortMouseUp(e, node.step_key, portId); }}
+            >
+              <span
+                className={`dot${isHot ? " hot" : ""}${bound ? " connected" : ""}${validTarget === "valid" ? " valid-target" : ""}`}
+                style={{ "--port-color": bound ? "var(--accent, #6366f1)" : "var(--ink-4)", ...(bound ? {} : { borderStyle: "dashed" }) }}
+                onMouseDown={(e) => { e.stopPropagation(); onPortMouseDown && onPortMouseDown(e, node.step_key, portId); }}
+                onMouseUp={(e) => { e.stopPropagation(); onPortMouseUp && onPortMouseUp(e, node.step_key, portId); }}
+              />
+              <span className="port-name">{m.target} <span className="map-src">{bound ? "← " + m.source : "← ziehen"}</span></span>
+            </div>
+          );
+        })}
+        {list.length === 0 && !(side === "left" && objInActive) && !(side === "left" && (ports.mapIn || []).length) && (
           <div className="port empty">
             {side === "left" ? "no inputs" : "no outputs"}
           </div>

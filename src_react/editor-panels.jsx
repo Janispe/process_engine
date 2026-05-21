@@ -663,14 +663,17 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
     const dialogByFn = {};
     for (const f of dialogFields) if (f && f.fieldname) dialogByFn[f.fieldname] = f;
     const prefill = (cfg.prefill_mapping && typeof cfg.prefill_mapping === "object") ? cfg.prefill_mapping : {};
+    const mapInputs = new Set(Array.isArray(cfg.map_inputs) ? cfg.map_inputs : []);
     return settableFields.map((df) => {
       const cur = parseSrc(prefill[df.fieldname], !!dialogByFn[df.fieldname]);
+      // "Aus Input" gilt auch fuer noch unbelegte Ziel-Felder (in map_inputs, aber ohne prefill).
+      const src = (cur.src === "" && mapInputs.has(df.fieldname)) ? "input" : cur.src;
       return {
         fieldname: df.fieldname,
         label: df.label || df.fieldname,
         fieldtype: df.fieldtype || "Data",
         reqd: !!df.reqd,
-        src: cur.src,
+        src,
         payload: cur.payload || "",
         literal: cur.literal != null ? String(cur.literal) : "",
         originalDef: dialogByFn[df.fieldname] || {
@@ -707,18 +710,22 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
   const save = () => {
     const dialog_fields = [];
     const prefill_mapping = {};
+    const map_inputs = [];
     const orig = (cfg.prefill_mapping && typeof cfg.prefill_mapping === "object") ? cfg.prefill_mapping : {};
     for (const r of rows) {
       if (r.src === "manual") {
         dialog_fields.push(r.originalDef);
         if (r.fieldname in orig) prefill_mapping[r.fieldname] = orig[r.fieldname];
-      } else if (r.src === "input" && r.payload) {
-        prefill_mapping[r.fieldname] = `{{ payload.${r.payload} }}`;
+      } else if (r.src === "input") {
+        // "Aus Input" -> Input-Port am Knoten; Quelle wird per Drag belegt (nicht hier).
+        // Bestehende Belegung ({{ payload.X }}) erhalten.
+        map_inputs.push(r.fieldname);
+        if (r.fieldname in orig) prefill_mapping[r.fieldname] = orig[r.fieldname];
       } else if (r.src === "fixed" && r.literal !== "") {
         prefill_mapping[r.fieldname] = r.literal;
       }
     }
-    onSave({ ...cfg, dialog_fields, prefill_mapping });
+    onSave({ ...cfg, dialog_fields, prefill_mapping, map_inputs });
   };
 
   return (
@@ -726,7 +733,7 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
       <div className="popover" style={{ width: "min(1100px, 92vw)", maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
         <div className="ph">
           <h3>Feld-Mapping — <span className="mono" style={{ fontWeight: 500, fontSize: 14 }}>{target}</span></h3>
-          <p>Pro Ziel-Feld die Quelle wählen: aus Payload, manuell zur Laufzeit, oder fester Wert.</p>
+          <p>Pro Ziel-Feld die Quelle wählen: aus Input (Port am Knoten, per Drag belegen), manuell zur Laufzeit, oder fester Wert.</p>
         </div>
         <div className="pb" style={{ overflow: "auto", flex: 1 }}>
           <table className="mapping-table">
@@ -749,17 +756,16 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
                   <td>
                     <select className="mapping-src" value={r.src} onChange={(e) => setRow(idx, { src: e.target.value })}>
                       <option value="">—</option>
-                      <option value="input">Aus Payload</option>
+                      <option value="input">Aus Input</option>
                       <option value="manual">Manuell</option>
                       <option value="fixed">Fest</option>
                     </select>
                   </td>
                   <td>
                     {r.src === "input" && (
-                      <select className="mapping-val" value={r.payload} onChange={(e) => setRow(idx, { payload: e.target.value })}>
-                        <option value="">—</option>
-                        {payloadFields.map((pf) => <option key={pf} value={pf}>{pf}</option>)}
-                      </select>
+                      r.payload
+                        ? <span style={{ fontSize: 12 }}>Input-Port belegt mit <code>{r.payload}</code></span>
+                        : <span className="muted" style={{ fontSize: 12 }}>Input-Port am Knoten — Quelle dort hinziehen</span>
                     )}
                     {r.src === "fixed" && (
                       <input className="mapping-val" type="text" value={r.literal} onChange={(e) => setRow(idx, { literal: e.target.value })} placeholder="Literal-Wert" />
@@ -774,7 +780,8 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
             </tbody>
           </table>
           <p className="muted" style={{ marginTop: 12, fontSize: 11.5 }}>
-            <strong>Aus Payload:</strong> Wert kommt aus einem Payload-Feld dieser Version.
+            <strong>Aus Input:</strong> erzeugt einen Input-Port am Knoten; die Quelle ziehst du im
+            Canvas auf diesen Port.
             &nbsp;<strong>Manuell:</strong> User gibt zur Laufzeit ein.
             &nbsp;<strong>Fest:</strong> fester Literal-Wert.
           </p>

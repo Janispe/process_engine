@@ -11,7 +11,16 @@ import {
   getPIPortPos,
   getPITriggerPos,
   getRootStepKeys,
+  getMapInputs,
 } from "./editor-node.jsx";
+
+// create_linked_doc: zu welchem Ziel-Feld gehoert die Quelle X? (Kante endet an min:<target>)
+function _targetForSource(step, sourceField) {
+  for (const m of getMapInputs(step)) {
+    if (m.source === sourceField) return m.target;
+  }
+  return null;
+}
 
 export function deriveEdges(schritte, io, piFields) {
   const byKey = {};
@@ -25,12 +34,19 @@ export function deriveEdges(schritte, io, piFields) {
   for (const r of io) {
     if (r.kind === "payload_input") {
       const prod = producer[r.target];
+      // create_linked_doc: Kante endet an der Ziel-Zeile (min:<target>), nicht an in:<source>.
+      const dstStep = byKey[r.step_key];
+      let dstPort = `in:${r.target}`;
+      if (dstStep && dstStep.task_type === "create_linked_doc") {
+        const t = _targetForSource(dstStep, r.target);
+        if (t) dstPort = `min:${t}`;
+      }
       if (prod && prod !== r.step_key && byKey[prod] && byKey[r.step_key]) {
         edges.push({
           id: `payload:${prod}:${r.step_key}:${r.target}`,
           kind: "payload",
           src: { node: prod, port: `out:${r.target}` },
-          dst: { node: r.step_key, port: `in:${r.target}` },
+          dst: { node: r.step_key, port: dstPort },
           field: r.target,
         });
       } else if (!prod && piFieldSet.has(r.target) && byKey[r.step_key]) {
@@ -38,7 +54,7 @@ export function deriveEdges(schritte, io, piFields) {
           id: `pi:${r.target}:${r.step_key}`,
           kind: "process_input",
           src: { node: PROCESS_INPUTS_NODE, port: `out:${r.target}` },
-          dst: { node: r.step_key, port: `in:${r.target}` },
+          dst: { node: r.step_key, port: dstPort },
           field: r.target,
         });
       }
@@ -109,7 +125,7 @@ export function EdgesLayer({
   }, [schritte]);
   const portsByKey = React.useMemo(() => {
     const m = {};
-    for (const s of schritte) m[s.step_key] = getNodePorts(s.step_key, io);
+    for (const s of schritte) m[s.step_key] = getNodePorts(s.step_key, io, s);
     return m;
   }, [schritte, io]);
 
@@ -249,7 +265,7 @@ export function MiniMap({ schritte, io, viewport, density, onNavigate }) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const sizes = {};
   for (const s of schritte) {
-    const ports = getNodePorts(s.step_key, io);
+    const ports = getNodePorts(s.step_key, io, s);
     const ww = getNodeWidth(density);
     const hh = getNodeHeight(ports);
     sizes[s.step_key] = { w: ww, h: hh };

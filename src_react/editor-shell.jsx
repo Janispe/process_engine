@@ -567,6 +567,11 @@ export function App({
   const [connect, setConnect] = useState(null);
   const [hotTarget, setHotTarget] = useState(null);
   const [hoverEdge, setHoverEdge] = useState(null);
+  // Refs spiegeln den State bei jedem Render -> der native window-mouseup-Listener (useEffect)
+  // liest immer den aktuellen Wert, statt einen evtl. veralteten Closure-Wert (sonst wird beim
+  // Loslassen finalizeConnection mit veraltetem/leerem hotTarget aufgerufen).
+  const connectRef = useRef(null); connectRef.current = connect;
+  const hotTargetRef = useRef(null); hotTargetRef.current = hotTarget;
 
   // Dialogs
   const [addOpen, setAddOpen] = useState(false);
@@ -748,8 +753,11 @@ export function App({
       }
       dragPosRef.current = null;
       setDragNode(null);
-      if (connect) {
-        if (hotTarget) finalizeConnection(connect, hotTarget);
+      // Refs statt Closure-Werte: garantiert der zuletzt gerenderte hotTarget/connect.
+      const conn = connectRef.current;
+      const hot = hotTargetRef.current;
+      if (conn) {
+        if (hot) finalizeConnection(conn, hot);
         setConnect(null);
         setHotTarget(null);
       }
@@ -784,6 +792,32 @@ export function App({
     if (isLocked) return;
     if (src.srcPort === "trigger-out" || dst.port === "trigger-out") {
       toast("Trigger-Linien sind automatisch — verbinde I/O statt Trigger zu ziehen", "err");
+      return;
+    }
+    // Mapping-Input (create_linked_doc): Payload-Feld-Output -> min:<Ziel-Feld>. Belegt das
+    // Ziel-Feld mit der Quelle: prefill_mapping[ziel] = "{{ payload.<quelle> }}".
+    if ((src.srcPort && src.srcPort.startsWith("min:")) || (dst.port && dst.port.startsWith("min:"))) {
+      const minIsSrc = src.srcPort && src.srcPort.startsWith("min:");
+      const minPort = minIsSrc ? src.srcPort : dst.port;
+      const minNode = minIsSrc ? src.srcNode : dst.node;
+      const otherPort = minIsSrc ? dst.port : src.srcPort;
+      const targetField = minPort.slice(4);
+      if (!otherPort || !otherPort.startsWith("out:")) {
+        toast("Ziehe ein Payload-Feld (Start-Input oder Producer-Output) auf das Ziel-Feld", "err");
+        return;
+      }
+      const sourceField = otherPort.slice(4);
+      const step = schritte.find((s) => s.step_key === minNode);
+      let cfg = {};
+      try { cfg = JSON.parse((step && step.konfig_json) || "{}") || {}; } catch (e) { cfg = {}; }
+      const prefill = { ...(cfg.prefill_mapping || {}) };
+      prefill[targetField] = `{{ payload.${sourceField} }}`;
+      const map_inputs = Array.isArray(cfg.map_inputs) ? cfg.map_inputs.slice() : [];
+      if (!map_inputs.includes(targetField)) map_inputs.push(targetField);
+      const nextCfg = { ...cfg, prefill_mapping: prefill, map_inputs };
+      patchStep(minNode, { konfig_json: JSON.stringify(nextCfg) });
+      syncMappingIO(minNode, nextCfg);
+      toast(`${targetField} ← ${sourceField} belegt`);
       return;
     }
     // Objekt-Input-Port (fill_fields, derive, ...): Payload-Feld-Output -> obj-in. Legt
@@ -887,7 +921,7 @@ export function App({
     }
     const node = schritte.find((s) => s.step_key === nodeKey);
     if (!node) return;
-    const ports = getNodePorts(nodeKey, schritt_io);
+    const ports = getNodePorts(nodeKey, schritt_io, node);
     const p = getPortPos(portId, ports, density);
     const rect = wsRef.current.getBoundingClientRect();
     const wx = (e.clientX - rect.left - view.tx) / view.scale;
@@ -900,8 +934,17 @@ export function App({
   }
 
   function onPortMouseUp(e, nodeKey, portId) {
-    if (!connect) return;
-    setHotTarget({ node: nodeKey, port: portId });
+    // Direkt am exakten Port abschliessen: der Port-onMouseUp ruft e.stopPropagation(), daher
+    // erreicht das Event den window-mouseup-Listener (der sonst finalisiert) NICHT. Wir
+    // finalisieren hier selbst — praeziser (genau der losgelassene Port) und ohne Timing-Glueck.
+    const conn = connectRef.current;
+    if (!conn) return;
+    // Klick auf denselben Port (kein echtes Ziehen) -> nur abbrechen.
+    if (!(conn.srcNode === nodeKey && conn.srcPort === portId)) {
+      finalizeConnection(conn, { node: nodeKey, port: portId });
+    }
+    setConnect(null);
+    setHotTarget(null);
   }
 
   // Vorbelegung des Ziel-Ports beim Hovern eines Knotens (man muss nicht exakt den kleinen Dot
@@ -941,7 +984,7 @@ export function App({
     if (!schritte.length) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const s of schritte) {
-      const ports = getNodePorts(s.step_key, schritt_io);
+      const ports = getNodePorts(s.step_key, schritt_io, s);
       const w = getNodeWidth(density);
       const h = getNodeHeight(ports);
       minX = Math.min(minX, s.editor_x);
@@ -995,7 +1038,7 @@ export function App({
       }
       const node = schritte.find((s) => s.step_key === hotTarget.node);
       if (node) {
-        const ports = getNodePorts(hotTarget.node, schritt_io);
+        const ports = getNodePorts(hotTarget.node, schritt_io, node);
         const p = getPortPos(hotTarget.port, ports, density);
         return { x: node.editor_x + p.x, y: node.editor_y + p.y, side: p.side };
       }
@@ -1098,7 +1141,7 @@ export function App({
             )}
 
             {schritte.map((s) => {
-              const ports = getNodePorts(s.step_key, schritt_io);
+              const ports = getNodePorts(s.step_key, schritt_io, s);
               const dimmed = search && !searchHits.has(s.step_key);
               const validTarget = connect && connect.srcNode !== s.step_key ? "valid" : null;
               return (
@@ -1120,6 +1163,7 @@ export function App({
                     onMouseDownHeader={onNodeMouseDownHeader}
                     onPortMouseDown={onPortMouseDown}
                     onPortMouseUp={onPortMouseUp}
+                    onPortMouseEnter={(nodeKey, portId) => { if (connect) setHotTarget({ node: nodeKey, port: portId }); }}
                   />
                 </div>
               );

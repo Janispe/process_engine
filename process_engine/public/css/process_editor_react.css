@@ -534,6 +534,14 @@ button { font-family: inherit; }
 }
 .port.obj-in .dot { border-style: dashed; }
 
+/* Mapping-Input (create_linked_doc): ein Port pro Ziel-Feld; Quelle per Drag belegen. */
+.port.map-in .map-src {
+  color: var(--ink-3);
+  font-size: 9.5px;
+}
+.port.map-in.unbound { color: var(--accent, #6366f1); }
+.port.map-in.unbound .map-src { color: var(--accent, #6366f1); }
+
 .node-footer {
   display: flex;
   align-items: center;
