@@ -254,10 +254,14 @@ export function ProcessInputsNode({
   io,
   selected,
   dragging,
+  readOnly,
   onSelect,
   onMouseDownHeader,
   onPortMouseDown,
   onPortMouseUp,
+  onAddInput,
+  onDeleteInput,
+  onEditInput,
   hotPort,
   validTarget,
 }) {
@@ -305,7 +309,22 @@ export function ProcessInputsNode({
                 key={portId}
                 title={unused ? `${field} — declared, aber nicht gelesen` : field}
               >
-                <span className="port-name">{field}</span>
+                {!readOnly && (
+                  <button
+                    className="pi-field-del"
+                    title="Input entfernen"
+                    style={{ border: "none", background: "transparent", color: "var(--ink-3)", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: "0 4px 0 0" }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); onDeleteInput && onDeleteInput(field); }}
+                  >×</button>
+                )}
+                <span
+                  className="port-name"
+                  style={!readOnly ? { cursor: "pointer" } : undefined}
+                  title={!readOnly ? "Typ/Label bearbeiten" : undefined}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { if (!readOnly && onEditInput) { e.stopPropagation(); onEditInput(field); } }}
+                >{field}</span>
                 <span
                   className={`dot${isHot ? " hot" : ""}${validTarget === "valid" ? " valid-target" : ""}${unused ? " unwired" : ""}`}
                   style={{ "--port-color": unused ? "var(--ink-4)" : color }}
@@ -315,6 +334,14 @@ export function ProcessInputsNode({
               </div>
             );
           })}
+          {!readOnly && (
+            <button
+              className="pi-add-input"
+              style={{ marginTop: 6, width: "100%", height: 24, border: "1px dashed var(--border-strong)", borderRadius: 5, background: "transparent", color: "var(--ink-2)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, cursor: "pointer" }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onAddInput && onAddInput(); }}
+            >+ Input</button>
+          )}
         </div>
       </div>
     </div>

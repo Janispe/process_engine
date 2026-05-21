@@ -23,7 +23,6 @@ import {
 import { EdgesLayer, PreviewEdge, MiniMap, deriveEdges } from "./editor-edges.jsx";
 import {
   KonfigEditor,
-  FieldsPanel,
   RawJsonDialog,
   OutputDeclareDialog,
   AddFieldDialog,
@@ -142,19 +141,6 @@ function Toolbar({
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path d="M 1,5 V 1 H 5 M 11,1 H 15 V 5 M 15,11 V 15 H 11 M 5,15 H 1 V 11" strokeLinecap="round" />
         </svg>
-      </button>
-
-      <button
-        className="tb-btn ghost"
-        style={panelMode === "fields" ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : {}}
-        onClick={onToggleFieldsPanel}
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <rect x="2" y="3" width="12" height="2.5" rx="0.5" />
-          <rect x="2" y="6.75" width="12" height="2.5" rx="0.5" />
-          <rect x="2" y="10.5" width="12" height="2.5" rx="0.5" />
-        </svg>
-        Felder
       </button>
 
       <button className="tb-btn primary" onClick={onAddStep} disabled={isLocked}>
@@ -574,6 +560,7 @@ export function App({
   const [outputDialog, setOutputDialog] = useState(null);
   const [mappingDialog, setMappingDialog] = useState(null);
   const [addFieldOpen, setAddFieldOpen] = useState(false);
+  const [editingField, setEditingField] = useState(null);  // spec beim Bearbeiten, sonst null
 
   // PI position (UI-only; persists locally per mount)
   const [piPosition, setPiPosition] = useState({ x: -260, y: 60 });
@@ -642,10 +629,20 @@ export function App({
   // ===== Panel helpers =====
   const selectStep = useCallback((sk) => { setSelectedKey(sk); setPanelMode("step"); }, []);
   const closePanel = useCallback(() => { setSelectedKey(null); setPanelMode(null); }, []);
-  const toggleFieldsPanel = useCallback(() => {
-    setPanelMode((m) => m === "fields" ? null : "fields");
-    setSelectedKey(null);
-  }, []);
+
+  // ===== Payload-Felder: nur ueber Knoten anlegen/bearbeiten (kein "Felder"-Panel mehr) =====
+  const removeField = (fieldname) => {
+    if (isLocked || !onDeleteField) return;
+    onDeleteField(fieldname);  // Host kaskadiert: entfernt auch alle I/O auf das Feld + re-mountet
+    toast(`Feld ${fieldname} entfernt`);
+  };
+  const openEditField = (fieldname) => {
+    if (isLocked) return;
+    const spec = (payload_field_specs || []).find((f) => (f.fieldname || "") === fieldname);
+    if (!spec) return;
+    setEditingField(spec);
+    setAddFieldOpen(true);
+  };
 
   // ===== Mutations: delegate to host callbacks =====
   const patchStep = (sk, patch) => { if (isLocked || !onPatchStep) return; onPatchStep(sk, patch); };
@@ -992,7 +989,6 @@ export function App({
         onAddStep={() => setAddOpen(true)}
         onAutoLayout={onAutoLayout}
         onFitToScreen={onFitToScreen}
-        onToggleFieldsPanel={toggleFieldsPanel}
       />
 
       <div className="workspace" ref={wsRef}>
@@ -1016,16 +1012,19 @@ export function App({
               onDeleteEdge={deleteEdge}
             />
 
-            {piFields.length > 0 && (
+            {(piFields.length > 0 || !isLocked) && (
               <ProcessInputsNode
                 position={piPosition}
                 piFields={piFields}
                 io={schritt_io}
-                selected={panelMode === "fields"}
                 dragging={dragNode && dragNode.key === PROCESS_INPUTS_NODE}
+                readOnly={isLocked}
                 hotPort={hotTarget && hotTarget.node === PROCESS_INPUTS_NODE ? hotTarget : null}
                 validTarget={connect && connect.srcNode !== PROCESS_INPUTS_NODE ? "valid" : null}
-                onSelect={() => { setSelectedKey(null); setPanelMode("fields"); }}
+                onSelect={() => closePanel()}
+                onAddInput={() => { setEditingField(null); setAddFieldOpen(true); }}
+                onDeleteInput={(f) => removeField(f)}
+                onEditInput={(f) => openEditField(f)}
                 onMouseDownHeader={(e) => {
                   if (isLocked) return;
                   const rect = wsRef.current.getBoundingClientRect();
@@ -1107,17 +1106,6 @@ export function App({
           onOpenMapping={(payload) => setMappingDialog(payload)}
         />
 
-        <FieldsPanel
-          open={panelMode === "fields"}
-          fieldSpecs={payload_field_specs}
-          io={schritt_io}
-          readOnly={isLocked}
-          onClose={closePanel}
-          onPatchField={(fn, patch) => { if (!isLocked && onPatchField) onPatchField(fn, patch); }}
-          onDeleteField={(fn) => { if (!isLocked && onDeleteField) onDeleteField(fn); }}
-          onAddFieldClick={() => setAddFieldOpen(true)}
-        />
-
         <Legend />
 
         <AddStepDialog
@@ -1148,10 +1136,15 @@ export function App({
         <AddFieldDialog
           open={addFieldOpen}
           existingNames={new Set(payload_field_specs.map((f) => f.fieldname))}
-          onCancel={() => setAddFieldOpen(false)}
+          editing={editingField}
+          onCancel={() => { setAddFieldOpen(false); setEditingField(null); }}
           onAdd={(spec) => {
             if (!isLocked && onAddField) onAddField(spec);
-            setAddFieldOpen(false);
+            setAddFieldOpen(false); setEditingField(null);
+          }}
+          onSave={(patch) => {
+            if (!isLocked && onPatchField && editingField) onPatchField(editingField.fieldname, patch);
+            setAddFieldOpen(false); setEditingField(null);
           }}
         />
 
@@ -1164,10 +1157,18 @@ export function App({
                   .filter((fn) => !schritt_io.some((r) => r.kind === "payload_output" && r.target === fn))
               : []
           }
+          existingNames={new Set(payload_field_specs.map((f) => f.fieldname))}
           onCancel={() => setOutputDialog(null)}
           onDeclare={(target) => {
             addIO({ step_key: outputDialog.stepKey, kind: "payload_output", target });
             toast(`Output ${target} deklariert`);
+            setOutputDialog(null);
+          }}
+          onDeclareNew={(spec) => {
+            const stepKey = outputDialog.stepKey;
+            if (!isLocked && onAddField) onAddField(spec);
+            addIO({ step_key: stepKey, kind: "payload_output", target: spec.fieldname });
+            toast(`Output ${spec.fieldname} angelegt`);
             setOutputDialog(null);
           }}
         />

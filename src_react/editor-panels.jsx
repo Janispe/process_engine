@@ -305,39 +305,97 @@ export function RawJsonDialog({ open, value, title, onCancel, onSave }) {
 
 // ========== Output deklarieren dialog ==========
 
-export function OutputDeclareDialog({ open, stepKey, availableFields, onCancel, onDeclare }) {
+export function OutputDeclareDialog({ open, stepKey, availableFields, existingNames, onCancel, onDeclare, onDeclareNew }) {
+  const [mode, setMode] = useState("existing");
   const [target, setTarget] = useState("");
-  useEffect(() => { if (open) setTarget(availableFields[0] || ""); }, [open, availableFields]);
+  const [fieldname, setFieldname] = useState("");
+  const [label, setLabel] = useState("");
+  const [fieldtype, setFieldtype] = useState("Data");
+  const [options, setOptions] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setMode(availableFields.length > 0 ? "existing" : "new");
+    setTarget(availableFields[0] || "");
+    setFieldname(""); setLabel(""); setFieldtype("Data"); setOptions("");
+  }, [open, availableFields]);
+
   if (!open) return null;
+
+  const validName = /^[a-z][a-z0-9_]*$/.test(fieldname.trim());
+  const takenNew = existingNames && existingNames.has(fieldname.trim());
+  const newValid = validName && !takenNew && label.trim();
+  const canDeclare = mode === "existing" ? !!target : newValid;
+
   return (
     <div className="popover-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="popover" style={{ width: 420 }}>
+      <div className="popover" style={{ width: 460 }}>
         <div className="ph">
           <h3>Output deklarieren — {stepKey}</h3>
-          <p>Wähle, welches Payload-Feld dieser Schritt produziert.</p>
+          <p>Dieser Schritt produziert ein Payload-Feld. Bestehendes wählen oder neu anlegen.</p>
         </div>
         <div className="pb">
-          {availableFields.length === 0 ? (
-            <div style={{ color: "var(--ink-3)", fontSize: 13 }}>
-              Alle Payload-Felder haben bereits einen Producer. Erst ein neues Feld anlegen („Felder").
-            </div>
+          <div className="insp-row" style={{ marginBottom: 8 }}>
+            <button className={mode === "existing" ? "tb-btn primary" : "tb-btn ghost"}
+                    disabled={availableFields.length === 0}
+                    onClick={() => setMode("existing")}>Bestehendes Feld</button>
+            <button className={mode === "new" ? "tb-btn primary" : "tb-btn ghost"}
+                    onClick={() => setMode("new")}>Neues Feld</button>
+          </div>
+          {mode === "existing" ? (
+            availableFields.length === 0 ? (
+              <div style={{ color: "var(--ink-3)", fontSize: 13 }}>
+                Alle Payload-Felder haben schon einen Producer. Lege ein neues Feld an.
+              </div>
+            ) : (
+              <div className="insp-field">
+                <label>Payload-Feld</label>
+                <select className="mono" value={target} onChange={(e) => setTarget(e.target.value)}>
+                  {availableFields.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+            )
           ) : (
-            <div className="insp-field">
-              <label>Payload-Feld</label>
-              <select className="mono" value={target} onChange={(e) => setTarget(e.target.value)}>
-                {availableFields.map((f) => <option key={f} value={f}>{f}</option>)}
-              </select>
-            </div>
+            <>
+              <div className="insp-row">
+                <div className="insp-field">
+                  <label>Feldname (snake_case)</label>
+                  <input autoFocus className="mono" type="text" value={fieldname}
+                         onChange={(e) => setFieldname(e.target.value)} placeholder="z.B. neuer_mietvertrag" />
+                  {fieldname && !validName && (
+                    <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 3 }}>nur Kleinbuchstaben, Zahlen, Unterstrich, Start-Buchstabe</div>
+                  )}
+                  {takenNew && <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 3 }}>Feldname bereits vergeben</div>}
+                </div>
+                <div className="insp-field">
+                  <label>Label</label>
+                  <input type="text" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="z.B. Neuer Mietvertrag" />
+                </div>
+              </div>
+              <div className="insp-row">
+                <div className="insp-field">
+                  <label>Feld-Typ</label>
+                  <select value={fieldtype} onChange={(e) => setFieldtype(e.target.value)}>
+                    {FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div className="insp-field">
+                  <label>Optionen</label>
+                  <input type="text" value={options} onChange={(e) => setOptions(e.target.value)}
+                         placeholder={fieldtype === "Link" ? "Ziel-Doctype" : "—"} />
+                </div>
+              </div>
+            </>
           )}
         </div>
         <div className="pf">
           <button onClick={onCancel}>Abbrechen</button>
-          <button
-            className="primary"
-            disabled={!target}
-            style={{ opacity: target ? 1 : 0.5, cursor: target ? "pointer" : "not-allowed" }}
-            onClick={() => onDeclare(target)}
-          >Deklarieren</button>
+          <button className="primary" disabled={!canDeclare}
+                  style={{ opacity: canDeclare ? 1 : 0.5, cursor: canDeclare ? "pointer" : "not-allowed" }}
+                  onClick={() => {
+                    if (mode === "existing") onDeclare(target);
+                    else onDeclareNew({ fieldname: fieldname.trim(), label: label.trim(), fieldtype, options, reqd: 0, in_list_view: 0, description: "" });
+                  }}>Deklarieren</button>
         </div>
       </div>
     </div>
@@ -346,7 +404,8 @@ export function OutputDeclareDialog({ open, stepKey, availableFields, onCancel, 
 
 // ========== Add Payload-Feld dialog ==========
 
-export function AddFieldDialog({ open, existingNames, onCancel, onAdd }) {
+export function AddFieldDialog({ open, existingNames, editing, onCancel, onAdd, onSave }) {
+  const isEdit = !!editing;
   const [fieldname, setFieldname] = useState("");
   const [label, setLabel] = useState("");
   const [fieldtype, setFieldtype] = useState("Data");
@@ -354,22 +413,26 @@ export function AddFieldDialog({ open, existingNames, onCancel, onAdd }) {
   const [reqd, setReqd] = useState(false);
 
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    if (editing) {
+      setFieldname(editing.fieldname || ""); setLabel(editing.label || "");
+      setFieldtype(editing.fieldtype || "Data"); setOptions(editing.options || ""); setReqd(!!editing.reqd);
+    } else {
       setFieldname(""); setLabel(""); setFieldtype("Data"); setOptions(""); setReqd(false);
     }
-  }, [open]);
+  }, [open, editing]);
 
   if (!open) return null;
 
   const validName = /^[a-z][a-z0-9_]*$/.test(fieldname.trim());
-  const taken = existingNames.has(fieldname.trim());
-  const valid = validName && !taken && label.trim();
+  const taken = !isEdit && existingNames.has(fieldname.trim());
+  const valid = (isEdit || (validName && !taken)) && label.trim();
 
   return (
     <div className="popover-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
       <div className="popover" style={{ width: 460 }}>
         <div className="ph">
-          <h3>Payload-Feld hinzufügen</h3>
+          <h3>{isEdit ? "Payload-Feld bearbeiten" : "Payload-Feld hinzufügen"}</h3>
           <p>Diese Felder werden je Prozess-Instanz in <code>payload_json</code> gespeichert.</p>
         </div>
         <div className="pb">
@@ -381,6 +444,7 @@ export function AddFieldDialog({ open, existingNames, onCancel, onAdd }) {
                 className="mono"
                 type="text"
                 value={fieldname}
+                disabled={isEdit}
                 onChange={(e) => setFieldname(e.target.value)}
                 placeholder="z.B. kaution_betrag"
               />
@@ -422,16 +486,17 @@ export function AddFieldDialog({ open, existingNames, onCancel, onAdd }) {
             className="primary"
             disabled={!valid}
             style={{ opacity: valid ? 1 : 0.5, cursor: valid ? "pointer" : "not-allowed" }}
-            onClick={() => onAdd({
-              fieldname: fieldname.trim(),
-              label: label.trim(),
-              fieldtype,
-              options,
-              reqd: reqd ? 1 : 0,
-              in_list_view: 0,
-              description: "",
-            })}
-          >Hinzufügen</button>
+            onClick={() => {
+              if (isEdit) {
+                onSave({ label: label.trim(), fieldtype, options, reqd: reqd ? 1 : 0 });
+              } else {
+                onAdd({
+                  fieldname: fieldname.trim(), label: label.trim(), fieldtype, options,
+                  reqd: reqd ? 1 : 0, in_list_view: 0, description: "",
+                });
+              }
+            }}
+          >{isEdit ? "Speichern" : "Hinzufügen"}</button>
         </div>
       </div>
     </div>
