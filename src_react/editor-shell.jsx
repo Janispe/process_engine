@@ -527,12 +527,26 @@ export function App({
 }) {
   const isLocked = read_only;
 
+  // Lokale Positions-Overrides pro step_key. Beim Ziehen bewegen wir die Node hier im
+  // React-State (live), denn der Host re-rendert NICHT pro mousemove (er muesste sonst
+  // die ganze React-App neu mounten). In frm.doc committen wir erst beim Loslassen.
+  // MUSS vor dem schritte-useMemo stehen (das useMemo liest posOverride synchron beim
+  // Render — eine spaetere const-Deklaration laeuft sonst in die Temporal Dead Zone).
+  const [posOverride, setPosOverride] = useState({});
+  const dragPosRef = useRef(null);
+
   // Schritte ohne gespeicherte Position deterministisch auto-layouten (sonst stapeln sich
   // alle auf (0,0)). Gezogene Schritte (editor_x/y persistiert) behalten ihre Position.
-  const schritte = useMemo(
-    () => withFallbackPositions(schritteRaw, schritt_io, density),
-    [schritteRaw, schritt_io, density]
-  );
+  // posOverride wird zuletzt drueber gelegt: das ist die Live-Position waehrend des Ziehens
+  // (und bis der naechste Re-Mount frische frm.doc-Werte liefert).
+  const schritte = useMemo(() => {
+    const base = withFallbackPositions(schritteRaw, schritt_io, density);
+    if (!Object.keys(posOverride).length) return base;
+    return base.map((s) => {
+      const o = posOverride[s.step_key];
+      return o ? { ...s, editor_x: o.editor_x, editor_y: o.editor_y } : s;
+    });
+  }, [schritteRaw, schritt_io, density, posOverride]);
 
   // ===== UI-only state =====
   const [selectedKey, setSelectedKey] = useState(null);
@@ -690,10 +704,13 @@ export function App({
             y: Math.round(wy - dragNode.offsetY),
           });
         } else {
-          patchStep(dragNode.key, {
+          const pos = {
             editor_x: Math.round(wx - dragNode.offsetX),
             editor_y: Math.round(wy - dragNode.offsetY),
-          });
+          };
+          // Live im React-State bewegen; der Commit in frm.doc passiert in onUp.
+          dragPosRef.current = pos;
+          setPosOverride((p) => ({ ...p, [dragNode.key]: pos }));
         }
       }
       if (connect) {
@@ -706,6 +723,12 @@ export function App({
     function onUp() {
       setPanning(false);
       panRef.current = null;
+      // Endposition der gezogenen Node jetzt einmalig in frm.doc persistieren.
+      // (PI-Node ist UI-only und wird nicht persistiert.)
+      if (dragNode && dragNode.key !== PROCESS_INPUTS_NODE && dragPosRef.current) {
+        patchStep(dragNode.key, dragPosRef.current);
+      }
+      dragPosRef.current = null;
       setDragNode(null);
       if (connect) {
         if (hotTarget) finalizeConnection(connect, hotTarget);
@@ -852,6 +875,8 @@ export function App({
   function onAutoLayout() {
     if (isLocked) return;
     const result = computeAutoLayout(schritte, schritt_io, density);
+    // Sofort sichtbar (lokaler Override) + in frm.doc persistieren.
+    setPosOverride((p) => ({ ...p, ...result }));
     for (const [sk, pos] of Object.entries(result)) {
       patchStep(sk, pos);
     }
