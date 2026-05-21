@@ -723,7 +723,7 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
 
   return (
     <div className="popover-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="popover" style={{ width: 720, maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
+      <div className="popover" style={{ width: "min(1100px, 92vw)", maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
         <div className="ph">
           <h3>Feld-Mapping — <span className="mono" style={{ fontWeight: 500, fontSize: 14 }}>{target}</span></h3>
           <p>Pro Ziel-Feld die Quelle wählen: aus Payload, manuell zur Laufzeit, oder fester Wert.</p>

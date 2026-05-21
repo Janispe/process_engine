@@ -943,6 +943,12 @@ button { font-family: inherit; }
   width: 460px;
   /* Nie hoeher als der Viewport -> Body scrollt bei Bedarf (siehe .popover .pb). */
   max-height: calc(100vh - 20vh);
+  /* Selbst breiter/hoeher ziehbar (Griff unten rechts; liegt dank Footer-Padding neben den
+     Buttons). min/max halten ihn nutzbar bzw. im Viewport. */
+  resize: both;
+  min-width: 360px;
+  max-width: 96vw;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -966,7 +972,7 @@ button { font-family: inherit; }
   color: var(--ink-3);
   font-size: 12.5px;
 }
-.popover .pb { padding: 14px 18px; overflow-y: auto; }
+.popover .pb { padding: 14px 18px; overflow: auto; }
 .popover .pf {
   padding: 12px 18px;
   border-top: 1px solid var(--border);
