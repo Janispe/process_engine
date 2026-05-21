@@ -570,15 +570,22 @@ class ProzessVersion(Document):
 				declared_all[fn] = out
 			declared_by_step[sk] = names
 
-		# 2. payload_output-I/O syncen: veraltete entfernen, fehlende anlegen.
+		# 2. payload_output-I/O syncen. WICHTIG: nur SELBST verwaltete Outputs (Spec auto_output=1)
+		#    raeumen wir auf — manuell deklarierte payload_output-Zeilen (z.B. das set_flag-Flag oder
+		#    andere Handler ohne declared_outputs) bleiben unangetastet.
+		spec_auto = {
+			(s.fieldname or "").strip(): int(s.get("auto_output") or 0)
+			for s in (self.get("payload_field_specs") or [])
+		}
 		existing_out: set[tuple[str, str]] = set()
 		kept_io = []
 		for r in (self.get("schritt_io") or []):
 			if (r.kind or "").strip() == "payload_output":
 				sk = (r.step_key or "").strip()
 				tgt = (r.target or "").strip()
-				if tgt not in declared_by_step.get(sk, set()):
-					continue  # veraltet
+				# veraltet entfernen NUR fuer auto-verwaltete Felder; manuelle bleiben.
+				if tgt not in declared_by_step.get(sk, set()) and spec_auto.get(tgt, 0) == 1:
+					continue
 				existing_out.add((sk, tgt))
 			kept_io.append(r)
 		self.set("schritt_io", kept_io)
