@@ -47,6 +47,7 @@ TASK_TYPE_PAPERLESS_EXPORT = "paperless_export"
 TASK_TYPE_EMAIL_DRAFT = "email_draft"
 TASK_TYPE_CREATE_LINKED_DOC = "create_linked_doc"
 TASK_TYPE_DERIVE = "derive"
+TASK_TYPE_FILL_FIELDS = "fill_fields"
 
 SUPPORTED_TASK_TYPES = (
 	TASK_TYPE_MANUAL_CHECK,
@@ -57,6 +58,7 @@ SUPPORTED_TASK_TYPES = (
 	TASK_TYPE_EMAIL_DRAFT,
 	TASK_TYPE_CREATE_LINKED_DOC,
 	TASK_TYPE_DERIVE,
+	TASK_TYPE_FILL_FIELDS,
 )
 
 
@@ -244,6 +246,13 @@ class BaseTaskHandler:
 		[{fieldname, fieldtype, options}]. Die Version-Validierung legt daraus automatisch
 		payload_field_specs (Name+Typ, auto_output=1) + payload_output-I/O an und entfernt
 		veraltete. Default: keine Outputs (manual_check, print_document, ...)."""
+		return []
+
+	def declared_inputs(self, config: dict) -> list[str]:
+		"""Welche Payload-Felder KONSUMIERT dieser Aufgabentyp aus seiner Config (Feldnamen)?
+
+		Die Version-Validierung legt daraus payload_input-I/O an (create-only), damit der Knoten
+		seinen Input-Port zeigt und die DAG-Reihenfolge stimmt. Default: keine."""
 		return []
 
 
@@ -762,6 +771,117 @@ class DeriveTaskHandler(BaseTaskHandler):
 		return {"field": out_field, "value": value}
 
 
+class FillFieldsTaskHandler(BaseTaskHandler):
+	"""Aufgabe: an einem Objekt (= Input des Knotens) bestimmte Felder ausfuellen.
+
+	Config:
+	  - source_field: Payload-Link-Feld = das Objekt (Input des Knotens)
+	  - source_doctype: Ziel-Doctype (vom fill_fields_picker aus der Feld-Spec gesetzt)
+	  - fields: [{fieldname, not_null}] — auszufuellende Felder; not_null=1 -> Pflicht fuer Abschluss
+
+	Laufzeit: 'Objekt oeffnen' (Navigation) + 'Abschliessen (pruefen)' -> run_action prueft, ob
+	alle not_null-Felder am Objekt befuellt sind, sonst Fehler. is_fulfilled nutzt dieselbe Pruefung
+	(gated auch den Prozess-Abschluss). Produziert nichts; konsumiert source_field (declared_inputs).
+	"""
+
+	task_type = TASK_TYPE_FILL_FIELDS
+
+	def config_schema(self) -> dict | None:
+		return {
+			"fields": [
+				{"key": "source_field", "label": _("Objekt (Payload-Link-Feld)"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+				{"key": "fields", "label": _("Auszufuellende Felder"), "fieldtype": "Data", "widget": "fill_fields_picker"},
+			]
+		}
+
+	def validate_config(self, step_or_task) -> None:
+		config = extract_task_config(step_or_task)
+		if not (config.get("source_field") or "").strip():
+			frappe.throw(_("fill_fields erfordert source_field (das Objekt-Feld)."))
+		if not (config.get("source_doctype") or "").strip():
+			frappe.throw(_("fill_fields erfordert source_doctype (vom Feld-Picker gesetzt)."))
+		if not self._config_fields(config):
+			frappe.throw(_("fill_fields erfordert mindestens ein auszufuellendes Feld."))
+
+	def declared_inputs(self, config: dict) -> list[str]:
+		f = (config.get("source_field") or "").strip()
+		return [f] if f else []
+
+	@staticmethod
+	def _config_fields(config: dict) -> list[dict]:
+		raw = config.get("fields")
+		if isinstance(raw, str):
+			try:
+				raw = json.loads(raw)
+			except (ValueError, TypeError):
+				return []
+		if not isinstance(raw, list):
+			return []
+		out = []
+		for f in raw:
+			if isinstance(f, dict) and (f.get("fieldname") or "").strip():
+				out.append({"fieldname": f["fieldname"].strip(), "not_null": int(f.get("not_null") or 0)})
+		return out
+
+	def _object_name(self, doc, config: dict) -> str:
+		sf = (config.get("source_field") or "").strip()
+		if not sf:
+			return ""
+		val = doc.payload(sf) if (hasattr(doc, "payload") and callable(doc.payload)) else doc.get(sf)
+		return (val or "").strip() if isinstance(val, str) else (val or "")
+
+	def _missing_required(self, config: dict, name: str) -> list[str]:
+		"""not_null-Felder, die am Objekt (noch) leer sind."""
+		doctype = (config.get("source_doctype") or "").strip()
+		required = [f["fieldname"] for f in self._config_fields(config) if f["not_null"]]
+		if not required:
+			return []
+		if not (doctype and name):
+			return required
+		missing = []
+		for fn in required:
+			val = frappe.db.get_value(doctype, name, fn)
+			if val is None or str(val).strip() == "":
+				missing.append(fn)
+		return missing
+
+	def is_fulfilled(self, context: TaskHandlerContext, doc: Document, task_row) -> TaskCheckResult:
+		config = extract_task_config(task_row)
+		missing = self._missing_required(config, self._object_name(doc, config))
+		return TaskCheckResult(fulfilled=(not missing), meta={"missing": missing})
+
+	def run_action(self, context: TaskHandlerContext, doc: Document, task_row, payload: dict | None = None) -> dict:
+		config = extract_task_config(task_row)
+		missing = self._missing_required(config, self._object_name(doc, config))
+		if missing:
+			frappe.throw(_("Noch nicht ausgefuellt: {0}").format(", ".join(missing)))
+		task_row.status = "Erledigt"
+		task_row.result_json = frappe.as_json({"checked": True})
+		doc.save(ignore_permissions=True)
+		return {"ok": True}
+
+	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
+		config = extract_task_config(task_row)
+		if (task_row.status or "") == "Erledigt":
+			return [{
+				"key": "reopen", "label": _("Wieder oeffnen"), "ignore_lock": True,
+				"_dispatch": "set_task_status", "_params": {"status": "Offen"},
+			}]
+		actions = []
+		doctype = (config.get("source_doctype") or "").strip()
+		name = self._object_name(doc, config)
+		if doctype and name:
+			actions.append({
+				"key": "open_object", "label": _("Objekt oeffnen"), "ignore_lock": True,
+				"navigate": {"kind": "form", "target": {"doctype": doctype, "name": name}},
+			})
+		actions.append({
+			"key": "complete", "label": _("Abschliessen (pruefen)"), "primary": True,
+			"_dispatch": "run_python_task", "_params": {},
+		})
+		return actions
+
+
 class TaskHandlerRegistry:
 	def __init__(self):
 		self._handlers = {
@@ -771,6 +891,7 @@ class TaskHandlerRegistry:
 			TASK_TYPE_PRINT_DOCUMENT: PrintDocumentTaskHandler(),
 			TASK_TYPE_CREATE_LINKED_DOC: CreateLinkedDocTaskHandler(),
 			TASK_TYPE_DERIVE: DeriveTaskHandler(),
+			TASK_TYPE_FILL_FIELDS: FillFieldsTaskHandler(),
 		}
 
 	def get_handler(self, *, handler_key: str | None = None, task_type: str | None = None, context: TaskHandlerContext | None = None) -> BaseTaskHandler:

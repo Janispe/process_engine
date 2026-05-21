@@ -60,7 +60,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Task Type",
-   "options": "manual_check\nfile_upload\npython_action\nprint_document\npaperless_export\nemail_draft\ncreate_linked_doc\nderive",
+   "options": "manual_check\nfile_upload\npython_action\nprint_document\npaperless_export\nemail_draft\ncreate_linked_doc\nderive\nfill_fields",
    "reqd": 1
   },
   {
@@ -154,7 +154,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-05-21 00:00:00.000000",
+ "modified": "2026-05-21 00:00:04.000000",
  "modified_by": "Administrator",
  "module": "Process Engine",
  "name": "Prozess Schritt",

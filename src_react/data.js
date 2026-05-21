@@ -11,6 +11,7 @@ export const TASK_TYPES = {
   email_draft:      { label: "Email Draft",        hue: 220, chroma: 0.13, glyph: "✉" },
   create_linked_doc:{ label: "Create Linked Doc",  hue: 335, chroma: 0.13, glyph: "+" },
   derive:           { label: "Ableitung (Auto)",   hue: 150, chroma: 0.13, glyph: "ƒ" },
+  fill_fields:      { label: "Feld ausfüllen",     hue: 55,  chroma: 0.13, glyph: "✎" },
 };
 
 export const TASK_TYPE_KEYS = Object.keys(TASK_TYPES);

@@ -619,6 +619,28 @@ class ProzessVersion(Document):
 				kept_specs.append(s)
 		self.set("payload_field_specs", kept_specs)
 
+		# 5. Deklarierte Inputs (z.B. fill_fields source_field): payload_input sicherstellen
+		#    (create-only) — der Knoten konsumiert das Feld, zeigt so den Input-Port + DAG-Dependency.
+		existing_in = {
+			((r.step_key or "").strip(), (r.target or "").strip())
+			for r in (self.get("schritt_io") or [])
+			if (r.kind or "").strip() == "payload_input"
+		}
+		for row in self.get("schritte") or []:
+			sk = (row.step_key or "").strip()
+			if not sk:
+				continue
+			handler = runtime_config.task_handler_registry.get_handler(
+				handler_key=(row.handler_key or "").strip(),
+				task_type=row.task_type,
+				context=runtime_config.task_handler_context,
+			)
+			for fn in (handler.declared_inputs(extract_task_config(row)) or []):
+				fn = (fn or "").strip()
+				if fn and (sk, fn) not in existing_in:
+					self.append("schritt_io", {"step_key": sk, "kind": "payload_input", "target": fn})
+					existing_in.add((sk, fn))
+
 	def _validate_active_uniqueness(self) -> None:
 		if not self.is_active:
 			return
