@@ -240,10 +240,11 @@ def build_trigger_payload(trigger_id: str, source_name: str) -> dict:
 def _apply_trigger_input_mapping(trigger, source_name: str, payload: dict) -> dict:
 	"""Legt das deklarative input_mapping eines Triggers ueber die payload_builder-Ausgabe.
 
-	Pro Payload-Feld: kind 'path' -> resolve_path(source_doctype, source_name, path)
-	(virtuell-bewusst, inkl. Link-Drilldown); 'fixed' -> value; 'manual'/'none'/'' ->
-	Feld bleibt ungesetzt (User fuellt es im neuen Formular). Felder, die das Mapping
-	deklariert, gewinnen ueber gleichnamige payload_builder-Eintraege.
+	Das Mapping ist pro deklariertem Feld autoritativ: kind 'path' -> resolve_path(
+	source_doctype, source_name, path) (virtuell-bewusst, inkl. Link-Drilldown);
+	'fixed' -> value; 'manual'/'none' -> Feld wird ENTFERNT, damit es leer bleibt (User
+	fuellt es im neuen Formular) — auch wenn der payload_builder es gesetzt hatte.
+	kind '' / unbekannt -> No-Op (Builder-Wert bleibt). Felder ohne Mapping bleiben unberuehrt.
 	"""
 	mapping = getattr(trigger, "input_mapping", None) or {}
 	if not mapping:
@@ -260,5 +261,8 @@ def _apply_trigger_input_mapping(trigger, source_name: str, payload: dict) -> di
 			out[field] = resolve_path(trigger.source_doctype, source_name, spec.get("path") or "")
 		elif kind == "fixed":
 			out[field] = spec.get("value")
-		# "manual"/"none"/"" -> bewusst nicht setzen
+		elif kind in ("manual", "none"):
+			# Explizit "vom User / nicht automatisch" -> Mapping gewinnt, Builder-Wert raus.
+			out.pop(field, None)
+		# kind "" / unbekannt -> No-Op (Builder-Wert bleibt)
 	return out

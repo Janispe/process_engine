@@ -231,6 +231,12 @@ class BaseTaskHandler:
 		Es wird NIE Code aus diesem Descriptor ausgefuehrt — nur ein Name aufgeloest."""
 		return None
 
+	def can_auto_run(self, context: TaskHandlerContext, doc: Document, task_row) -> bool:
+		"""Nur fuer is_auto-Handler relevant: ob der Auto-Run JETZT laufen darf (Inputs da).
+		Default True; Auto-Handler (z.B. derive) ueberschreiben das, um auf vorhandene
+		Quell-Inputs zu warten, statt mit leerem Input vorzeitig abzuschliessen."""
+		return True
+
 
 class ManualCheckTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_MANUAL_CHECK
@@ -597,10 +603,58 @@ class DeriveTaskHandler(BaseTaskHandler):
 			if not (config.get(key) or "").strip():
 				frappe.throw(_("derive erfordert '{0}' in der Konfig.").format(key))
 
+		source_doctype = config["source_doctype"].strip()
+		# Pfad gegen Meta validieren -> kaputte Pfade fallen beim Speichern auf, nicht erst
+		# zur Laufzeit als geloggter Auto-Run-Fehler.
+		from process_engine.process_engine.processes.path_resolver import validate_path
+
+		validate_path(source_doctype, config["path"].strip())
+
+		# Best-effort Cross-Check gegen die Versions-Feldspecs: prozess_version.py setzt sie als
+		# row.flags.version_payload_specs. Im Temporal-/Seed-Pfad (frappe._dict) fehlt das -> skip.
+		specs = None
+		flags = getattr(step_or_task, "flags", None)
+		if flags is not None:
+			try:
+				specs = flags.get("version_payload_specs")
+			except Exception:
+				specs = None
+		if specs is not None:
+			by_name = {(s.get("fieldname") or "").strip(): s for s in specs}
+			src_field = config["source_field"].strip()
+			out_field = config["store_in_payload_field"].strip()
+			src_spec = by_name.get(src_field)
+			if src_spec is None:
+				frappe.throw(_("derive: source_field '{0}' ist kein deklariertes Payload-Feld.").format(src_field))
+			if (src_spec.get("fieldtype") or "") != "Link" or (src_spec.get("options") or "").strip() != source_doctype:
+				frappe.throw(
+					_("derive: source_field '{0}' muss ein Link auf {1} sein (laut Payload-Feld-Spec).").format(
+						src_field, source_doctype
+					)
+				)
+			if out_field not in by_name:
+				frappe.throw(
+					_("derive: store_in_payload_field '{0}' ist kein deklariertes Payload-Feld.").format(out_field)
+				)
+
 	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
 		# Auto-Run-Knoten: kein manueller "Erledigt"-Klick. Die Engine fuehrt run_action
 		# automatisch aus, sobald die Inputs vorhanden sind (_run_auto_steps).
 		return []
+
+	def can_auto_run(self, context: TaskHandlerContext, doc: Document, task_row) -> bool:
+		# Erst ableiten, wenn die Quelle wirklich im Payload steht. Sonst wuerde ein leerer
+		# Auto-Run den Output auf None setzen + den Schritt faelschlich abschliessen — und ein
+		# spaeter eintreffender Input wuerde nie mehr verarbeitet (Status bleibt Erledigt).
+		config = extract_task_config(task_row)
+		source_field = (config.get("source_field") or "").strip()
+		if not source_field:
+			return False
+		if hasattr(doc, "payload") and callable(doc.payload):
+			val = doc.payload(source_field)
+		else:
+			val = doc.get(source_field)
+		return bool(str(val).strip()) if val is not None else False
 
 	def run_action(self, context: TaskHandlerContext, doc: Document, task_row, payload: dict | None = None) -> dict:
 		# Lazy-Import: path_resolver ist ein Leaf-Modul; lokaler Import vermeidet jede
@@ -619,7 +673,13 @@ class DeriveTaskHandler(BaseTaskHandler):
 			source_name = doc.payload(source_field)
 		else:
 			source_name = doc.get(source_field)
-		value = resolve_path(source_doctype, (source_name or ""), path)
+		source_name = "" if source_name is None else str(source_name).strip()
+		if not source_name:
+			# Quelle (noch) nicht vorhanden -> nichts ableiten und den Schritt NICHT abschliessen,
+			# damit ein spaeter eintreffender Input noch verarbeitet wird (Defense-in-Depth zu
+			# can_auto_run, das diesen Fall im Auto-Run bereits abfaengt).
+			return {"field": out_field, "value": None, "skipped": True}
+		value = resolve_path(source_doctype, source_name, path)
 
 		if hasattr(doc, "payload_set") and callable(doc.payload_set):
 			doc.payload_set(out_field, value)

@@ -6,6 +6,7 @@ from frappe.tests.utils import FrappeTestCase
 from process_engine.process_engine.processes.path_resolver import (
 	get_path_options,
 	resolve_path,
+	validate_path,
 )
 
 # Deterministische Fixtures aus dem Frappe-Core: jede DocType-Zeile hat ein Link-Feld
@@ -66,3 +67,33 @@ class TestPathResolver(FrappeTestCase):
 		self.assertEqual(am["is_virtual"], 1)
 		self.assertTrue(am["is_link"])
 		self.assertEqual(am["options"], "Mietvertrag")
+
+	# ----- validate_path -----
+
+	def test_validate_path_ok(self):
+		validate_path("DocType", "module")          # Link, terminal
+		validate_path("DocType", "module.name")     # Link -> Standardfeld terminal
+
+	def test_validate_path_unknown_field_raises(self):
+		with self.assertRaises(frappe.ValidationError):
+			validate_path("DocType", "gibt_es_nicht_xyz")
+
+	def test_validate_path_nonlink_midpath_raises(self):
+		with self.assertRaises(frappe.ValidationError):
+			validate_path("DocType", "autoname.foo")  # autoname ist Data, kein Link
+
+	def test_validate_path_unknown_doctype_raises(self):
+		with self.assertRaises(frappe.ValidationError):
+			validate_path("Gibt Es Nicht XYZ", "feld")
+
+	# ----- Permission-Enforcement (Finding High) -----
+
+	def test_resolve_path_denies_without_read_permission(self):
+		# Als Guest (keine Read-Permission auf User) muss resolve_path hart werfen,
+		# auch fuer gespeicherte Felder (nicht nur virtuelle).
+		frappe.set_user("Guest")
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				resolve_path("User", "Administrator", "email")
+		finally:
+			frappe.set_user("Administrator")

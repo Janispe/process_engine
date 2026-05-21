@@ -902,6 +902,11 @@ class ProcessEngine:
 					continue
 				if not self._is_task_unlocked(doc, row):
 					continue
+				# Nicht nur "freigegeben" (DAG), sondern auch "Inputs wirklich da": ein derive
+				# darf erst laufen, wenn seine Quelle im Payload steht — sonst wuerde es mit
+				# leerem Input vorzeitig abschliessen und spaeter eintreffende Werte ignorieren.
+				if not handler.can_auto_run(self.config.task_handler_context, doc, row):
+					continue
 				try:
 					handler.run_action(self.config.task_handler_context, doc, row, {})
 				except Exception:

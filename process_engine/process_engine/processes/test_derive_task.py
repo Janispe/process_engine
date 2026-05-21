@@ -29,11 +29,14 @@ class _FakeDoc:
 class _FakeRow:
 	"""Tut so, als waere es ein Vorlagen-Schritt (liest Config aus konfig_json)."""
 
-	def __init__(self, config: dict):
+	def __init__(self, config: dict, version_specs=None):
 		self.konfig_json = json.dumps(config)
 		self.task_type = TASK_TYPE_DERIVE
 		self.status = "Offen"
 		self.result_json = None
+		self.flags = frappe._dict()
+		if version_specs is not None:
+			self.flags.version_payload_specs = version_specs
 
 
 class TestDeriveTaskHandler(FrappeTestCase):
@@ -100,6 +103,51 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		# Wirft nicht.
 		DeriveTaskHandler().validate_config(row)
 
+	def test_validate_config_rejects_invalid_path(self):
+		# Finding 4: Pfad gegen Meta validieren -> kaputter Pfad faellt beim Save auf.
+		row = _FakeRow({
+			"source_field": "src",
+			"source_doctype": "DocType",
+			"path": "gibt_es_nicht_xyz",
+			"store_in_payload_field": "out",
+		})
+		with self.assertRaises(frappe.ValidationError):
+			DeriveTaskHandler().validate_config(row)
+
+	def test_validate_config_cross_check_source_field_must_be_link(self):
+		# Finding 4: mit Versions-Specs (Flag) wird geprueft, dass source_field ein Link auf
+		# source_doctype ist. Hier ist src als Data deklariert -> Fehler.
+		row = _FakeRow(
+			{
+				"source_field": "src",
+				"source_doctype": "DocType",
+				"path": "module",
+				"store_in_payload_field": "out",
+			},
+			version_specs=[
+				{"fieldname": "src", "fieldtype": "Data", "options": ""},
+				{"fieldname": "out", "fieldtype": "Data", "options": ""},
+			],
+		)
+		with self.assertRaises(frappe.ValidationError):
+			DeriveTaskHandler().validate_config(row)
+
+	def test_validate_config_cross_check_ok_with_link_spec(self):
+		row = _FakeRow(
+			{
+				"source_field": "src",
+				"source_doctype": "DocType",
+				"path": "module",
+				"store_in_payload_field": "out",
+			},
+			version_specs=[
+				{"fieldname": "src", "fieldtype": "Link", "options": "DocType"},
+				{"fieldname": "out", "fieldtype": "Data", "options": ""},
+			],
+		)
+		# Wirft nicht: src ist Link->DocType, out deklariert.
+		DeriveTaskHandler().validate_config(row)
+
 
 class TestDeriveAutoRunIntegration(FrappeTestCase):
 	"""End-to-end: ein derive-Schritt leitet beim Save automatisch ab (Auto-Run)."""
@@ -119,7 +167,7 @@ class TestDeriveAutoRunIntegration(FrappeTestCase):
 				frappe.conf[k] = v
 		super().tearDown()
 
-	def _build(self):
+	def _build(self, src_value="User"):
 		typ_name = f"_derive_{uuid.uuid4().hex[:8]}"
 		typ = frappe.get_doc({
 			"doctype": "Prozess Typ", "name1": typ_name, "label": "Derive Test",
@@ -147,9 +195,10 @@ class TestDeriveAutoRunIntegration(FrappeTestCase):
 			],
 		}).insert(ignore_permissions=True)
 		# DocType "User" liegt im Modul "Core" -> deterministisch ableitbar.
+		payload = {"src_doc": src_value} if src_value else {}
 		inst = frappe.get_doc({
 			"doctype": "Prozess Instanz", "prozess_typ": typ_name,
-			"payload_json": json.dumps({"src_doc": "User"}),
+			"payload_json": json.dumps(payload),
 		}).insert(ignore_permissions=True)
 		return typ, version, inst
 
@@ -167,5 +216,31 @@ class TestDeriveAutoRunIntegration(FrappeTestCase):
 			self.assertTrue(derive_row.erfuellt)
 		finally:
 			frappe.delete_doc("Prozess Instanz", inst.name, force=True, ignore_permissions=True)
+			frappe.delete_doc("Prozess Version", version.name, force=True, ignore_permissions=True)
+			frappe.delete_doc("Prozess Typ", typ.name, force=True, ignore_permissions=True)
+
+	def test_derive_waits_for_source_then_runs(self):
+		# Finding 2: ohne Quelle darf der Derive NICHT laufen/abschliessen; kommt die Quelle
+		# spaeter, laeuft er beim naechsten Save.
+		typ, version, inst = self._build(src_value=None)
+		try:
+			inst.reload()
+			inst.save(ignore_permissions=True)
+			inst.reload()
+			derive_row = next(r for r in inst.aufgaben if (r.step_key or "") == "step_derive")
+			self.assertNotEqual((derive_row.status or "").strip(), "Erledigt", "Derive lief ohne Quelle")
+			self.assertIsNone(inst.payload("out_val"))
+
+			# Quelle nachliefern -> jetzt muss der Derive laufen.
+			inst.payload_set("src_doc", "User")
+			inst.save(ignore_permissions=True)
+			inst.reload()
+			self.assertEqual(inst.payload("out_val"), "Core")
+			derive_row = next(r for r in inst.aufgaben if (r.step_key or "") == "step_derive")
+			self.assertEqual((derive_row.status or "").strip(), "Erledigt")
+		finally:
+			frappe.delete_doc("Prozess Instanz", inst.name, force=True, ignore_permissions=True)
+			frappe.delete_doc("Prozess Version", version.name, force=True, ignore_permissions=True)
+			frappe.delete_doc("Prozess Typ", typ.name, force=True, ignore_permissions=True)
 			frappe.delete_doc("Prozess Version", version.name, force=True, ignore_permissions=True)
 			frappe.delete_doc("Prozess Typ", typ.name, force=True, ignore_permissions=True)

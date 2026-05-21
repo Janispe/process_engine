@@ -48,6 +48,22 @@ class TestTriggerInputMapping(FrappeTestCase):
 		out = _apply_trigger_input_mapping(t, "User", {"a": 1})
 		self.assertEqual(out, {"a": 1})
 
+	def test_manual_removes_builder_value(self):
+		t = self._trigger({"a": {"kind": "manual"}})
+		out = _apply_trigger_input_mapping(t, "User", {"a": "BUILDER", "b": 2})
+		self.assertNotIn("a", out)   # manual -> Builder-Wert entfernt
+		self.assertEqual(out["b"], 2)
+
+	def test_none_removes_builder_value(self):
+		t = self._trigger({"a": {"kind": "none"}})
+		out = _apply_trigger_input_mapping(t, "User", {"a": "BUILDER"})
+		self.assertNotIn("a", out)
+
+	def test_empty_kind_keeps_builder_value(self):
+		t = self._trigger({"a": {"kind": ""}})
+		out = _apply_trigger_input_mapping(t, "User", {"a": "BUILDER"})
+		self.assertEqual(out["a"], "BUILDER")  # No-Op
+
 
 class TestDbTriggerInputMapping(FrappeTestCase):
 	"""DB-Trigger (Prozess Typ): input_mapping_json wird in ProcessTrigger.input_mapping geparst."""

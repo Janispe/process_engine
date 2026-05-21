@@ -487,6 +487,10 @@ class ProzessVersion(Document):
 				task_type=row.task_type,
 				context=runtime_config.task_handler_context,
 			)
+			# Versions-Kontext fuer Handler-Validierungen mitgeben (z.B. derive prueft, dass
+			# source_field ein Link-Spec mit passendem Ziel-Doctype ist). Best-effort: Handler,
+			# die es nicht brauchen, ignorieren das Flag.
+			row.flags.version_payload_specs = self.get("payload_field_specs") or []
 			handler.validate_config(row)
 
 		# Edge-Validierung (DAG-Kanten in schritt_kanten)

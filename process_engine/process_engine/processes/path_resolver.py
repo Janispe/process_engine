@@ -41,6 +41,12 @@ def _read_field(doctype: str, name: str, fieldname: str):
 	Virtuelle Felder ueber den geladenen Doc (Property), gespeicherte per db.get_value.
 	Standardfelder (name/creation/...) werden als gespeicherte Data-Scalars behandelt.
 	"""
+	# Read-Permission auf JEDEN besuchten Doc pruefen — auch fuer gespeicherte Felder und
+	# Link-Drilldown-Ziele, nicht nur fuer virtuelle. Sonst koennte resolve_path Werte aus
+	# Dokumenten lesen (per schnellem db.get_value), die der aktuelle User gar nicht sehen
+	# darf. has_permission(doc=name) prueft auch zeilenbasierte User-Permissions.
+	if not frappe.has_permission(doctype, ptype="read", doc=name):
+		raise frappe.PermissionError(_("Keine Leseberechtigung fuer {0} {1}.").format(doctype, name))
 	meta = frappe.get_meta(doctype)
 	df = meta.get_field(fieldname)
 	if df is None:
@@ -49,11 +55,43 @@ def _read_field(doctype: str, name: str, fieldname: str):
 			return value, frappe._dict({"fieldtype": "Data", "options": None, "is_virtual": 0})
 		frappe.throw(_("Feld '{0}' existiert nicht in {1}.").format(fieldname, doctype))
 	if getattr(df, "is_virtual", 0):
+		# Permission bereits oben geprueft; Property ueber den geladenen Doc auswerten.
 		doc = frappe.get_doc(doctype, name)
-		doc.check_permission("read")
 		return getattr(doc, fieldname, None), df
 	value = frappe.db.get_value(doctype, name, fieldname)
 	return value, df
+
+
+def validate_path(doctype: str, path: str) -> None:
+	"""Validiert einen Punkt-Pfad gegen das Meta (ohne Werte/Permissions zu lesen).
+
+	Wirft bei: unbekanntem Doctype, nicht existierendem Feld, oder einem Nicht-Link mitten
+	im Pfad (der nicht weiter aufgeloest werden kann). Wird beim Speichern einer Prozess-
+	Version genutzt, damit kaputte Derive-Pfade nicht erst zur Laufzeit auffallen.
+	"""
+	doctype = (doctype or "").strip()
+	path = (path or "").strip()
+	if not doctype:
+		frappe.throw(_("Pfad-Validierung: kein Quell-Doctype."))
+	if not frappe.db.exists("DocType", doctype):
+		frappe.throw(_("Pfad-Validierung: Doctype '{0}' existiert nicht.").format(doctype))
+	if not path:
+		frappe.throw(_("Pfad-Validierung: leerer Pfad."))
+	segments = [s.strip() for s in path.split(".") if s.strip()]
+	cur = doctype
+	for i, seg in enumerate(segments):
+		is_last = i == len(segments) - 1
+		df = frappe.get_meta(cur).get_field(seg)
+		if df is None:
+			if is_last and seg in _STANDARD_FIELDS:
+				return
+			frappe.throw(_("Pfad ungueltig: Feld '{0}' existiert nicht in {1}.").format(seg, cur))
+		if not is_last:
+			if df.fieldtype not in LINK_FIELDTYPES or not (df.options or "").strip():
+				frappe.throw(
+					_("Pfad ungueltig: '{0}' ist kein Link und kann nicht weiter aufgeloest werden.").format(seg)
+				)
+			cur = df.options.strip()
 
 
 def resolve_path(doctype: str, name: str, path: str):
