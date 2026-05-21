@@ -456,6 +456,26 @@ function computeAutoLayout(schritte, io, density) {
   return out;
 }
 
+// ========== Fallback-Positionen ==========
+// Schritte ohne gespeicherte Position (oder alle auf (0,0)) bekommen ein deterministisches
+// Auto-Layout, sonst stapeln sich alle Knoten uebereinander auf (0,0) und onFitToScreen
+// rechnet mit NaN. Bereits positionierte (gezogene) Schritte behalten ihre Position —
+// so ueberlebt der Fallback auch teilweises Verschieben.
+function withFallbackPositions(schritte, io, density) {
+  if (!schritte || !schritte.length) return schritte || [];
+  const isPlaced = (s) => {
+    const x = Number(s.editor_x), y = Number(s.editor_y);
+    return Number.isFinite(x) && Number.isFinite(y) && !(x === 0 && y === 0);
+  };
+  if (schritte.every(isPlaced)) return schritte;
+  const layout = computeAutoLayout(schritte, io, density);
+  return schritte.map((s) => {
+    if (isPlaced(s)) return s;
+    const p = layout[s.step_key] || { editor_x: 0, editor_y: 0 };
+    return { ...s, editor_x: p.editor_x, editor_y: p.editor_y };
+  });
+}
+
 // ========== Default schema/meta fetchers (fallbacks if host doesn't provide them) ==========
 
 async function defaultFetchSchema() { return null; }
@@ -465,7 +485,7 @@ async function defaultFetchMeta(doctype) { throw new Error(`fetchMeta not provid
 
 export function App({
   // Required data props (typically from frm.doc)
-  schritte = [],
+  schritte: schritteRaw = [],
   schritt_io = [],
   payload_field_specs = [],
 
@@ -506,6 +526,13 @@ export function App({
   showEdgeLabels = true,
 }) {
   const isLocked = read_only;
+
+  // Schritte ohne gespeicherte Position deterministisch auto-layouten (sonst stapeln sich
+  // alle auf (0,0)). Gezogene Schritte (editor_x/y persistiert) behalten ihre Position.
+  const schritte = useMemo(
+    () => withFallbackPositions(schritteRaw, schritt_io, density),
+    [schritteRaw, schritt_io, density]
+  );
 
   // ===== UI-only state =====
   const [selectedKey, setSelectedKey] = useState(null);
