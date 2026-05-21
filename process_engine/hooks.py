@@ -16,7 +16,10 @@ boot_session = "process_engine.process_engine.processes.triggers.add_to_boot"
 # Global eingebunden in jeder Desk-Session — process_triggers.js liest die
 # bootinfo-Trigger und haengt "Prozess starten"-Buttons an die jeweiligen
 # Source-Doctypes (Mietvertrag, Wohnung, ...).
+# pe_registry.js MUSS zuerst laden: legt window.process_engine.{config_widgets,
+# action_dialogs, task_views} an, in die Doctype-JS und Consumer-Apps eintragen.
 app_include_js = [
+	"/assets/process_engine/js/pe_registry.js",
 	"/assets/process_engine/js/process_triggers.js",
 ]
 

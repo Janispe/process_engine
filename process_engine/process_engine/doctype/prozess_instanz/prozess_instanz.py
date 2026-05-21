@@ -68,58 +68,84 @@ def dispatch_workflow_action(
 
 
 @frappe.whitelist()
-def get_create_linked_dialog_fields(docname: str, row_name: str) -> dict:
-	"""Liefert die Dialog-Field-Definitionen fuer eine create_linked_doc-Aufgabe.
+def get_task_action_dialog(docname: str, row_name: str, action_key: str) -> dict:
+	"""Phase C: generische Dialog-Felder fuer eine vom Handler deklarierte Laufzeit-Aktion.
 
-	Single Source of Truth: `dialog_fields` aus der Task-Config. Wir raten nichts
-	aus Target-Doctype-Meta — weil Pflicht-Logik in Frappe oft an depends_on/
-	Domain-Validatoren haengt und nicht zuverlaessig ableitbar ist.
-
-	prefill_mapping-Jinja-Templates werden gegen das aktuelle payload_json + doc
-	ausgewertet und als `default`-Werte in die Field-Defs gemerged.
-	"""
-	import json as _json
-
+	Loest den Handler der Aufgabe auf, prueft dass `action_key` in dessen
+	runtime_actions-Selbstbeschreibung steht (Allowlist) und delegiert an
+	handler.action_dialog_fields(). Loest create_linked und beliebige Consumer-Dialoge
+	ueber denselben Pfad. Rueckgabe: {fields, title?, primary_label?, ...}."""
 	doc = frappe.get_doc("Prozess Instanz", docname)
-	# write statt read: der Dialog fuehrt zu einer Aenderung an der Prozess Instanz
+	# write statt read: der Dialog fuehrt i.d.R. zu einer Aenderung an der Prozess Instanz
 	doc.check_permission("write")
+	engine = ProcessEngine.for_instance(doc)
+	ctx = engine.config.task_handler_context
 	row = next((r for r in (doc.aufgaben or []) if r.name == row_name), None)
 	if not row:
-		frappe.throw(f"Task-Row '{row_name}' nicht gefunden.")
-	# Phase 10: Aufgaben tragen keine eigene Config mehr — live aus der Prozess Version
-	# aufloesen (extract_task_config erkennt die Aufgabe und resolved Version->Schritt).
-	from process_engine.process_engine.processes.task_registry import extract_task_config
+		frappe.throw(_("Aufgabe '{0}' nicht gefunden.").format(row_name))
+	handler = engine._get_task_handler(row)
+	descriptors = handler.runtime_actions(ctx, doc, row) or []
+	if not any(d.get("key") == action_key for d in descriptors):
+		frappe.throw(_("Unbekannte oder nicht erlaubte Aktion: {0}").format(action_key))
+	return handler.action_dialog_fields(ctx, doc, row, action_key) or {"fields": []}
 
-	config = extract_task_config(row)
-	dialog_fields = list(config.get("dialog_fields") or [])
-	prefill = config.get("prefill_mapping") or {}
-	try:
-		payload = _json.loads(doc.payload_json or "{}")
-		if not isinstance(payload, dict):
-			payload = {}
-	except (ValueError, TypeError):
-		payload = {}
-	rendered_defaults: dict = {}
-	for k, v in prefill.items():
-		if isinstance(v, str) and "{{" in v:
-			rendered = frappe.render_template(v, {"payload": payload, "doc": doc})
-			val = (rendered or "").strip()
-			# Jinja-Artefakte filtern, damit das nicht als Default auf Form-Fields
-			# landet und z.B. den Date-Picker mit "undefined, NaN" verwirrt:
-			#   - "None"      → payload[key] war Python None
-			#   - "null" / "undefined" → JS-Artefakte
-			#   - String enthaelt "{{" → Frappe's render_template gibt bei fehlendem
-			#     dict-key einen unrenderten Platzhalter zurueck
-			if val.lower() in ("none", "null", "undefined") or "{{" in val:
-				val = ""
-			rendered_defaults[k] = val or None
+
+@frappe.whitelist()
+def get_create_linked_dialog_fields(docname: str, row_name: str) -> dict:
+	"""Backward-Compat-Wrapper: create_linked-Dialog laeuft jetzt ueber den generischen
+	Pfad (get_task_action_dialog -> handler.action_dialog_fields)."""
+	return get_task_action_dialog(docname, row_name, "create_linked")
+
+
+def _sanitize_task_view(view) -> dict | None:
+	"""Validiert/saeubert einen task_view-Descriptor. `component` ist Pflicht. `bundle` darf nur
+	ein lokales App-Asset sein (/assets/...), keine externe URL — billige, klare Boundary.
+	`props` nur als dict. Der Client spiegelt die Bundle-Pruefung (defense in depth)."""
+	if not isinstance(view, dict):
+		return None
+	component = (view.get("component") or "").strip()
+	if not component:
+		return None
+	out: dict = {"component": component}
+	bundle = (view.get("bundle") or "").strip()
+	if bundle:
+		if bundle.startswith("/assets/"):
+			out["bundle"] = bundle
 		else:
-			rendered_defaults[k] = v
-	for fld in dialog_fields:
-		fn = fld.get("fieldname")
-		if fn and fn in rendered_defaults and rendered_defaults[fn] is not None:
-			fld["default"] = rendered_defaults[fn]
-	return {"fields": dialog_fields, "target_doctype": (config.get("target_doctype") or "")}
+			frappe.log_error(
+				title="task_view: unsicheres bundle ignoriert",
+				message=f"component={component} bundle={bundle}",
+			)
+	props = view.get("props")
+	if isinstance(props, dict):
+		out["props"] = props
+	return out
+
+
+@frappe.whitelist()
+def get_task_views(docname: str) -> dict:
+	"""Phase E: pro Aufgabe ein optionaler Custom-View-Descriptor (Handler-Selbstbeschreibung).
+
+	Rueckgabe: {row_name: {component, bundle?, props?} | None}. None -> generisches Rendering.
+	Der Client laedt `bundle` lazy, schlaegt `component` in window.process_engine.task_views
+	nach und mountet es. Es wird nie Code aus dem Descriptor ausgefuehrt — nur ein Name."""
+	doc = frappe.get_doc("Prozess Instanz", docname)
+	doc.check_permission("read")
+	engine = ProcessEngine.for_instance(doc)
+	ctx = engine.config.task_handler_context
+
+	result: dict = {}
+	for row in doc.aufgaben or []:
+		try:
+			view = engine._get_task_handler(row).task_view(ctx, doc, row)
+		except Exception:
+			frappe.log_error(
+				title="task_view fehlgeschlagen",
+				message=f"Prozess Instanz {doc.name}, Row {row.name}\n{frappe.get_traceback()}",
+			)
+			view = None
+		result[row.name] = _sanitize_task_view(view)
+	return result
 
 
 # ==================== Phase 13 B: Selbstbeschreibende Laufzeit-Aktionen ====================
@@ -190,16 +216,44 @@ def get_task_runtime_actions(docname: str) -> dict:
 		client_actions = []
 		for d in descriptors:
 			disabled, reason = _apply_action_gates(engine, doc, row, d, instance_lock_reason)
+			# Phase D: `navigate` (rein deklarativ, serverseitig berechnet) + `has_action`
+			# (ob es ueberhaupt ein Dispatch-Ziel gibt) gehen an den Client. `_dispatch`/
+			# `_params` bleiben weiterhin server-only.
 			client_actions.append({
 				"key": d.get("key"),
 				"label": d.get("label"),
 				"primary": bool(d.get("primary")),
 				"dialog": d.get("dialog") or "",
+				"navigate": _sanitize_navigate(d.get("navigate")),
+				"has_action": bool((d.get("_dispatch") or "").strip()),
 				"disabled": disabled,
 				"reason": reason,
 			})
 		result[row.name] = client_actions
 	return result
+
+
+# Phase D: nur diese Navigations-Arten sind erlaubt. Allowlist serverseitig, damit ein
+# Handler den Client nicht zu beliebigen Aktionen verleiten kann; der Client spiegelt sie.
+_ALLOWED_NAVIGATE_KINDS = {"route", "url", "form"}
+
+
+def _sanitize_navigate(navigate) -> dict | None:
+	"""Validiert einen navigate-Descriptor aus runtime_actions. Unbekannte/kaputte ->
+	None (Button verhaelt sich dann wie eine normale Action ohne Navigation)."""
+	if not isinstance(navigate, dict):
+		return None
+	kind = (navigate.get("kind") or "").strip()
+	if kind not in _ALLOWED_NAVIGATE_KINDS:
+		return None
+	target = navigate.get("target")
+	if kind == "route" and not isinstance(target, (list, tuple)):
+		return None
+	if kind == "form" and not (isinstance(target, dict) and target.get("doctype") and target.get("name")):
+		return None
+	if kind == "url" and not (isinstance(target, str) and target.strip()):
+		return None
+	return {"kind": kind, "target": list(target) if isinstance(target, tuple) else target}
 
 
 @frappe.whitelist()

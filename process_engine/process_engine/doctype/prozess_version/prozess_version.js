@@ -693,51 +693,102 @@ function _render_konfig_editor(frm, inspector_el, row, container) {
 	});
 }
 
-// Rendert die Config-Felder eines Schemas (widget "control" | "payload_field_select" |
-// "doc_field_mapping") als make_controls bzw. Widget, bound an die konfig_json-Keys.
+// Rendert die Config-Felder eines Schemas. Jedes Feld nennt ein `widget`; der Renderer
+// schlaegt es in window.process_engine.config_widgets nach (Built-ins: "control",
+// "payload_field_select", "doc_field_mapping"). Consumer-Apps koennen eigene Widgets
+// registrieren, ohne diesen Renderer anzufassen. Unbekanntes Widget -> generisches Control
+// (fieldtype). Kein Schema/keine Felder -> Raw-JSON (Aufrufer _render_konfig_editor).
 function _render_config_fields(frm, row, container, fields, cfg) {
+	_pe_register_builtin_config_widgets();
+	const reg = window.process_engine && window.process_engine.config_widgets;
 	for (const def of fields) {
 		const widget = def.widget || "control";
-		if (widget === "doc_field_mapping") {
-			_render_doc_field_mapping(frm, row, container, def, cfg);
-			continue;
+		const ctx = _pe_config_widget_ctx(frm, row, container, def, cfg);
+		const fn = reg && reg.get(widget);
+		if (fn) {
+			try {
+				fn(ctx);
+				continue;
+			} catch (e) {
+				console.error("[process_engine] config widget failed:", widget, e);
+			}
+		} else {
+			// Sichtbar machen: unbekanntes Widget deutet auf Asset-Reihenfolge/Tippfehler hin.
+			console.warn(
+				`[process_engine] config widget '${widget}' nicht registriert — Fallback auf generisches Control. (Consumer-Asset geladen?)`
+			);
 		}
-		const $col = $('<div class="pe-field" style="margin-bottom:6px;"></div>');
-		$(container).append($col);
-		let fieldtype = def.fieldtype || "Data";
-		let options = def.options;
-		if (widget === "payload_field_select") {
-			fieldtype = "Select";
-			options = (frm.doc.payload_field_specs || [])
-				.map((s) => (s.fieldname || "").trim())
-				.filter(Boolean)
-				.join("\n");
-		}
-		const ctrl = frappe.ui.form.make_control({
-			df: { fieldname: def.key, label: def.label || def.key, fieldtype, options: options || undefined, reqd: def.reqd || 0 },
-			parent: $col.get(0),
-			render_input: true,
-		});
-		const cur = cfg[def.key];
-		if (fieldtype === "Check") ctrl.set_value(cint(cur));
-		else ctrl.set_value(cur != null ? cur : "");
-		const _apply = () => {
-			let val = ctrl.get_value();
-			if (fieldtype === "Check") val = cint(val);
-			cfg[def.key] = val;
+		// Fallback: unbekanntes/fehlerhaftes Widget -> generisches Control auf def.fieldtype.
+		_pe_widget_control(ctx);
+	}
+}
+
+// Kontext, den jedes Config-Widget bekommt. `commit` persistiert einen Key in konfig_json.
+function _pe_config_widget_ctx(frm, row, container, def, cfg) {
+	return {
+		frm,
+		row,
+		def,
+		cfg,
+		container,
+		commit(key, value) {
+			cfg[key] = value;
 			frappe.model.set_value(row.doctype, row.name, "konfig_json", JSON.stringify(cfg));
 			frm.dirty();
-			// create_linked_doc: store_in_payload_field ist das Output-Feld. Wird es ueber
-			// dieses Control (ohne den Mapping-Dialog) gesetzt/geaendert, sofort die
-			// payload_output-IO-Zeile koppeln — sonst fehlt sie und der Server blockt beim
-			// Save (payload_output ist Pflicht fuer create_linked_doc).
-			if (row.task_type === "create_linked_doc" && def.key === "store_in_payload_field") {
-				_sync_create_linked_io(frm, row.step_key, cfg);
-			}
-		};
-		if (ctrl.$input && ctrl.$input.length) ctrl.$input.on("change", _apply);
-		else ctrl.df.onchange = _apply;
+		},
+	};
+}
+
+// Built-in-Widgets in die Registry eintragen. Implementierungen bleiben hier (sie nutzen
+// Editor-interne Helfer), aber die Aufloesung laeuft ueber die Registry — so ist der
+// Erweiterungspunkt einheitlich. register() ueberschreibt idempotent.
+function _pe_register_builtin_config_widgets() {
+	const reg = window.process_engine && window.process_engine.config_widgets;
+	if (!reg) return;
+	reg.register("control", _pe_widget_control);
+	reg.register("payload_field_select", _pe_widget_control); // Variante via def.widget
+	reg.register("doc_field_mapping", _pe_widget_doc_field_mapping);
+}
+
+// "control" + "payload_field_select": einfaches make_control, bound an einen konfig_json-Key.
+function _pe_widget_control(ctx) {
+	const { frm, row, def, cfg, container } = ctx;
+	const $col = $('<div class="pe-field" style="margin-bottom:6px;"></div>');
+	$(container).append($col);
+	let fieldtype = def.fieldtype || "Data";
+	let options = def.options;
+	if ((def.widget || "control") === "payload_field_select") {
+		fieldtype = "Select";
+		options = (frm.doc.payload_field_specs || [])
+			.map((s) => (s.fieldname || "").trim())
+			.filter(Boolean)
+			.join("\n");
 	}
+	const ctrl = frappe.ui.form.make_control({
+		df: { fieldname: def.key, label: def.label || def.key, fieldtype, options: options || undefined, reqd: def.reqd || 0 },
+		parent: $col.get(0),
+		render_input: true,
+	});
+	const cur = cfg[def.key];
+	if (fieldtype === "Check") ctrl.set_value(cint(cur));
+	else ctrl.set_value(cur != null ? cur : "");
+	const _apply = () => {
+		let val = ctrl.get_value();
+		if (fieldtype === "Check") val = cint(val);
+		ctx.commit(def.key, val);
+		// create_linked_doc: store_in_payload_field ist das Output-Feld. Wird es ueber
+		// dieses Control (ohne den Mapping-Dialog) gesetzt/geaendert, sofort die
+		// payload_output-IO-Zeile koppeln — sonst fehlt sie und der Server blockt beim Save.
+		if (row.task_type === "create_linked_doc" && def.key === "store_in_payload_field") {
+			_sync_create_linked_io(frm, row.step_key, cfg);
+		}
+	};
+	if (ctrl.$input && ctrl.$input.length) ctrl.$input.on("change", _apply);
+	else ctrl.df.onchange = _apply;
+}
+
+function _pe_widget_doc_field_mapping(ctx) {
+	_render_doc_field_mapping(ctx.frm, ctx.row, ctx.container, ctx.def, ctx.cfg);
 }
 
 // ==================== Stufe 2: create_linked_doc doc_field_mapping ====================

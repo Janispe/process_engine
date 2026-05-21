@@ -206,6 +206,29 @@ class BaseTaskHandler:
 			"_dispatch": "set_task_status", "_params": {"status": "Erledigt"},
 		}]
 
+	def action_dialog_fields(self, context: TaskHandlerContext, doc: Document, task_row, action_key: str) -> dict:
+		"""Phase C: Felddefinitionen fuer einen generischen Laufzeit-Dialog einer Action.
+
+		Eine runtime_actions-Action mit `"dialog": "<name>"` ohne client-seitig registrierten
+		Custom-Dialog laesst den Client einen generischen frappe.ui.Dialog aus diesen Feldern
+		bauen. Submit ruft run_task_action(action_key, {"user_values": <dialog-werte>}) — der
+		Handler liest die Werte in run_action/seiner Dispatch-Methode aus payload["user_values"].
+
+		Rueckgabe: {"fields": [frappe-fielddef, ...], "title"?, "primary_label"?, ...beliebige
+		Zusatzkeys fuer Custom-Dialoge}. Leeres `fields` -> kein Dialog noetig (Client fuehrt
+		die Action direkt aus)."""
+		return {"fields": []}
+
+	def task_view(self, context: TaskHandlerContext, doc: Document, task_row) -> dict | None:
+		"""Phase E: optionale Custom-Client-Component fuer die Darstellung dieser Aufgabe.
+
+		None -> generisches Rendering (Standard-Buttons aus runtime_actions). Sonst
+		{"component": "<registry-name>", "bundle"?: "/assets/<app>/js/<file>.js", "props"?: {...}}.
+		Der Client laedt `bundle` (falls gesetzt) lazy via frappe.require, schlaegt `component`
+		in window.process_engine.task_views nach und mountet es in einen Per-Aufgabe-Slot.
+		Es wird NIE Code aus diesem Descriptor ausgefuehrt — nur ein Name aufgeloest."""
+		return None
+
 
 class ManualCheckTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_MANUAL_CHECK
@@ -436,6 +459,50 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 			"_dispatch": "create_linked_doc", "_params": {},
 		})
 		return actions
+
+	def action_dialog_fields(self, context: TaskHandlerContext, doc: Document, task_row, action_key: str) -> dict:
+		"""Dialog-Felder fuer den 'Neu anlegen'-Dialog (Phase C: generischer Dialog-Pfad).
+
+		Single Source of Truth: `dialog_fields` aus der Task-Config — wir raten nichts aus
+		Target-Doctype-Meta, weil Pflicht-Logik in Frappe oft an depends_on/Domain-Validatoren
+		haengt. prefill_mapping-Jinja-Templates werden gegen payload_json + doc ausgewertet und
+		als `default` in die Field-Defs gemerged."""
+		import json as _json
+
+		if action_key != "create_linked":
+			return {"fields": []}
+		config = extract_task_config(task_row)
+		dialog_fields = list(config.get("dialog_fields") or [])
+		prefill = config.get("prefill_mapping") or {}
+		try:
+			payload = _json.loads(getattr(doc, "payload_json", None) or "{}")
+			if not isinstance(payload, dict):
+				payload = {}
+		except (ValueError, TypeError):
+			payload = {}
+		rendered_defaults: dict = {}
+		for k, v in prefill.items():
+			if isinstance(v, str) and "{{" in v:
+				rendered = frappe.render_template(v, {"payload": payload, "doc": doc})
+				val = (rendered or "").strip()
+				# Jinja-Artefakte filtern, damit sie nicht als Default auf Date-/Link-Felder
+				# landen: "None" (Python None), "null"/"undefined" (JS), unrenderter "{{...}}".
+				if val.lower() in ("none", "null", "undefined") or "{{" in val:
+					val = ""
+				rendered_defaults[k] = val or None
+			else:
+				rendered_defaults[k] = v
+		for fld in dialog_fields:
+			fn = fld.get("fieldname")
+			if fn and fn in rendered_defaults and rendered_defaults[fn] is not None:
+				fld["default"] = rendered_defaults[fn]
+		target_doctype = (config.get("target_doctype") or "").strip()
+		return {
+			"fields": dialog_fields,
+			"target_doctype": target_doctype,
+			"title": _("Neu anlegen: {0}").format(target_doctype) if target_doctype else _("Neu anlegen"),
+			"primary_label": _("Anlegen"),
+		}
 
 	def is_fulfilled(self, context: TaskHandlerContext, doc: Document, task_row) -> TaskCheckResult:
 		config = extract_task_config(task_row)
