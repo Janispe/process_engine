@@ -465,6 +465,11 @@ async function defaultFetchMeta(doctype) { throw new Error(`fetchMeta not provid
 
 // ========== Main App ==========
 
+// Zoom/Pan ueberlebt einen ECHTEN Re-Mount (z.B. nach frm.refresh/Save, wenn der Host den
+// Container neu aufbauen muss). Pro Version gemerkt. Im Normalfall (Daten-Aenderung) wird der
+// React-Root wiederverwendet und der State bleibt ohnehin erhalten (siehe index.jsx).
+const __viewCache = new Map();
+
 export function App({
   // Required data props (typically from frm.doc)
   schritte: schritteRaw = [],
@@ -538,8 +543,17 @@ export function App({
   const [panelMode, setPanelMode] = useState(null);  // "step" | "fields" | null
   const [search, setSearch] = useState("");
 
-  // Pan / zoom
-  const [view, setView] = useState({ tx: 60, ty: 40, scale: 0.85 });
+  // Pan / zoom — initial aus dem Cache (falls ein vorheriger Mount derselben Version etwas
+  // gesetzt hat), sonst Default. setView spiegelt jeden Wert in den Cache, damit er einen
+  // echten Re-Mount uebersteht.
+  const [view, setViewRaw] = useState(() => __viewCache.get(versionKey) || { tx: 60, ty: 40, scale: 0.85 });
+  const setView = useCallback((updater) => {
+    setViewRaw((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (versionKey) __viewCache.set(versionKey, next);
+      return next;
+    });
+  }, [versionKey]);
   const [vpSize, setVpSize] = useState({ w: 1, h: 1 });
   const wsRef = useRef(null);
 
@@ -611,6 +625,9 @@ export function App({
     if (didInitialFit.current) return;
     if (vpSize.w < 100 || !schritte.length) return;
     didInitialFit.current = true;
+    // Hat ein frueherer Mount derselben Version schon Zoom/Pan gesetzt, diesen behalten
+    // statt erneut auto-zu-fitten (sonst springt der Zoom nach einem Re-Mount doch zurueck).
+    if (__viewCache.has(versionKey)) return;
     setTimeout(() => onFitToScreen(), 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vpSize.w, vpSize.h]);

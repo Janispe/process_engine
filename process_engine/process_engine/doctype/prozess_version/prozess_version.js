@@ -61,7 +61,7 @@ frappe.ui.form.on("Prozess Version", {
 		frm.add_custom_button(__("Version duplizieren"), () => _open_duplicate_dialog(frm));
 
 		_render_dag_preview(frm);
-		_render_visual_editor(frm);
+		_render_visual_editor(frm, true);
 	},
 
 	before_save(frm) {
@@ -329,10 +329,19 @@ function _render_dag_preview(frm) {
 
 // ==================== Phase 10: Visual Editor ====================
 
-async function _render_visual_editor(frm) {
+async function _render_visual_editor(frm, fresh = false) {
 	const field = frm.get_field("editor_html");
 	if (!field) return;
 	const is_locked = _is_version_locked(frm);
+	// fresh=true (Form-Refresh/nach Save): Container verwerfen -> sauberer Mount mit frischen
+	// Server-Daten (lokale posOverride werden zurueckgesetzt). Zoom/Pan kommt aus dem React-Cache
+	// zurueck. Bei Editor-internen Aenderungen (fresh=false) bleibt der Container -> kein Neuladen.
+	if (fresh && field._pe_container) {
+		if (window.ProcessEditorReact && window.ProcessEditorReact.unmount) {
+			try { window.ProcessEditorReact.unmount(field._pe_container); } catch (e) { /* noop */ }
+		}
+		field._pe_container = null;
+	}
 
 	// React-Bundle + CSS lazy laden (analog dag_mermaid.js). Bundle wird via build.mjs
 	// aus src_react/ gebaut und nach public/js bzw. public/css gelegt.
@@ -341,13 +350,21 @@ async function _render_visual_editor(frm) {
 	);
 	await _loadCssOnce("/assets/process_engine/css/process_editor_react.css");
 
-	field.$wrapper.empty();
-	const container = document.createElement("div");
-	// Hoehe responsiv an den Viewport koppeln (statt fix 800px), damit auf kleineren
-	// Bildschirmen nichts ueberlaeuft; .app fuellt den Container per height:100%.
-	container.style.cssText =
-		"position: relative; height: 80vh; min-height: 520px; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;";
-	field.$wrapper.append(container);
+	// Container STABIL halten: nur einmal anlegen und bei Daten-Aenderungen wiederverwenden.
+	// So bleibt der React-Root erhalten (siehe index.jsx) und der View-State (Zoom/Pan,
+	// Auswahl) springt nicht bei jeder Aenderung zurueck. Nur neu anlegen, wenn der Container
+	// nicht mehr im DOM haengt (z.B. nach frm.refresh, das den Wrapper leert).
+	let container = field._pe_container;
+	if (!container || !field.$wrapper[0] || !field.$wrapper[0].contains(container)) {
+		field.$wrapper.empty();
+		container = document.createElement("div");
+		// Hoehe responsiv an den Viewport koppeln (statt fix 800px), damit auf kleineren
+		// Bildschirmen nichts ueberlaeuft; .app fuellt den Container per height:100%.
+		container.style.cssText =
+			"position: relative; height: 80vh; min-height: 520px; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;";
+		field.$wrapper.append(container);
+		field._pe_container = container;
+	}
 
 	// Bridge: React mutiert nie direkt frm.doc — alle Aenderungen laufen ueber
 	// frappe.model (dirty + refresh), Config-Schema kommt vom Server, Custom-Widgets
