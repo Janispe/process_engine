@@ -4,9 +4,9 @@
 // ruft es auf, wenn ein Handler in config_schema() ein Feld mit "widget": "fill_fields_picker"
 // deklariert (siehe FillFieldsTaskHandler).
 //
-// Ableitung des Ziel-Doctype: aus dem in cfg.source_field gewaehlten Payload-Feld (muss Link
-// sein, options = Ziel-Doctype). Listet dessen setzbare Felder; pro Feld waehlbar + "nicht null".
-// Auswahl committet { source_doctype, fields: [{fieldname, not_null}] } atomar (commitMany).
+// Ziel-Doctype: cfg.input_doctype (in der Config gewaehlt). Listet dessen setzbare Felder;
+// pro Feld waehlbar + "nicht null". Committet { fields: [{fieldname, not_null}] }.
+// Das konkrete Objekt kommt zur Laufzeit ueber den verdrahteten Objekt-Input (source_field).
 //
 // Ladereihenfolge via hooks.py: nach pe_registry.js.
 

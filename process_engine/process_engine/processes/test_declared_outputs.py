@@ -28,7 +28,7 @@ class TestDeclaredOutputs(FrappeTestCase):
 	def test_derive_type_from_path(self):
 		# DocType.module ist Link->Module Def -> Output erbt diesen Typ.
 		outs = DeriveTaskHandler().declared_outputs(
-			{"store_in_payload_field": "modul", "source_doctype": "DocType", "path": "module"}
+			{"store_in_payload_field": "modul", "input_doctype": "DocType", "path": "module"}
 		)
 		self.assertEqual(outs, [{"fieldname": "modul", "fieldtype": "Link", "options": "Module Def"}])
 

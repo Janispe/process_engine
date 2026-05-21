@@ -4,11 +4,11 @@
 // Der React-Editor ruft es auf, wenn ein Schritt-Handler in config_schema() ein Feld
 // mit "widget": "path_picker" deklariert (siehe DeriveTaskHandler).
 //
-// Funktion: ausgehend vom Quell-Doctype (abgeleitet aus dem Payload-Feld in cfg.source_field,
-// das ein Link-Feld sein muss) zeigt es alle wählbaren Felder via get_path_options an.
-// Link-Felder lassen sich "tiefer" aufklappen (verketteter Pfad, z.B. wohnung.immobilie),
-// virtuelle Felder (z.B. aktueller_mietvertrag) sind markiert. Auswahl committet sowohl
-// `path` als auch `source_doctype` in die Konfig (atomar via commitMany).
+// Funktion: ausgehend vom Quell-Doctype (cfg.input_doctype, in der Config gewählt) zeigt es alle
+// wählbaren Felder via get_path_options an. Link-Felder lassen sich "tiefer" aufklappen (verketteter
+// Pfad, z.B. wohnung.immobilie), virtuelle Felder (z.B. aktueller_mietvertrag) sind markiert.
+// Auswahl committet `path` in die Konfig. Das konkrete Objekt wird zur Laufzeit über den
+// verdrahteten Objekt-Input-Port (source_field) geliefert, nicht hier gewählt.
 //
 // Ladereihenfolge via hooks.py: nach pe_registry.js.
 
@@ -25,18 +25,6 @@
 
 	const GET_OPTS = "process_engine.process_engine.processes.path_resolver.get_path_options";
 
-	// Quell-Doctype aus dem Payload-Feld (cfg.source_field) ermitteln: dessen Feld-Spec
-	// muss ein Link sein, options = Ziel-Doctype.
-	function _sourceDoctype(frm, sourceField) {
-		const specs = (frm && frm.doc && frm.doc.payload_field_specs) || [];
-		const spec = specs.find((s) => (s.fieldname || "").trim() === (sourceField || "").trim());
-		if (!spec) return { doctype: "", reason: "Quell-Feld nicht in den Payload-Feldern gefunden." };
-		if ((spec.fieldtype || "") !== "Link" || !(spec.options || "").trim()) {
-			return { doctype: "", reason: `Quell-Feld '${sourceField}' ist kein Link-Feld (kein Ziel-Doctype).` };
-		}
-		return { doctype: (spec.options || "").trim(), reason: "" };
-	}
-
 	function _renderPathPicker(ctx) {
 		const { frm, def, container, readOnly } = ctx;
 		const $box = $('<div class="ppk-widget"></div>').appendTo(container);
@@ -47,15 +35,9 @@
 		function rebuild() {
 			$box.empty();
 			const cfg = ctx.cfg || {};
-			const sourceField = (cfg.source_field || "").trim();
-			if (!sourceField) {
-				$box.append('<div class="ppk-hint">Bitte zuerst die <b>Quelle (Payload-Feld)</b> wählen.</div>');
-				_addReload();
-				return;
-			}
-			const src = _sourceDoctype(frm, sourceField);
-			if (!src.doctype) {
-				$box.append(`<div class="ppk-hint ppk-warn">${frappe.utils.escape_html(src.reason)}</div>`);
+			const baseDoctype = (cfg.input_doctype || "").trim();
+			if (!baseDoctype) {
+				$box.append('<div class="ppk-hint">Bitte zuerst den <b>Quell-Doctype</b> wählen.</div>');
 				_addReload();
 				return;
 			}
@@ -63,7 +45,7 @@
 			// Kopf: Quelle + aktueller Pfad
 			const pathStr = (cfg.path || "").trim();
 			$box.append(
-				`<div class="ppk-head">Quelle: <code>${frappe.utils.escape_html(src.doctype)}</code>` +
+				`<div class="ppk-head">Quelle: <code>${frappe.utils.escape_html(baseDoctype)}</code>` +
 				(pathStr ? ` · Pfad: <code>${frappe.utils.escape_html(pathStr)}</code>` : " · <span class='ppk-muted'>noch kein Pfad</span>") +
 				"</div>"
 			);
@@ -71,7 +53,7 @@
 			// Breadcrumb der gedrillten Link-Segmente + "zurück"
 			if (prefix.length) {
 				const $bc = $('<div class="ppk-bc"></div>').appendTo($box);
-				$bc.append(`<span class="ppk-muted">${frappe.utils.escape_html(src.doctype)}</span>`);
+				$bc.append(`<span class="ppk-muted">${frappe.utils.escape_html(baseDoctype)}</span>`);
 				prefix.forEach((seg) => $bc.append(` › <code>${frappe.utils.escape_html(seg)}</code>`));
 				if (!readOnly) {
 					$('<button class="btn btn-xs ppk-back">‹ zurück</button>')
@@ -85,7 +67,7 @@
 			const $list = $('<div class="ppk-list">Lade Felder…</div>').appendTo($box);
 			frappe.call({
 				method: GET_OPTS,
-				args: { doctype: src.doctype, path_prefix: prefix.join(".") },
+				args: { doctype: baseDoctype, path_prefix: prefix.join(".") },
 			}).then((r) => {
 				const fields = (r.message && r.message.fields) || [];
 				$list.empty();
@@ -106,9 +88,7 @@
 						`</div>`
 					).appendTo($list);
 					$row.find(".ppk-pick").on("click", () => {
-						const patch = { path: full, source_doctype: src.doctype };
-						if (typeof ctx.commitMany === "function") ctx.commitMany(patch);
-						else { ctx.commit("source_doctype", src.doctype); ctx.commit("path", full); }
+						ctx.commit("path", full);
 						rebuild();
 					});
 					$row.find(".ppk-drill").on("click", () => { prefix.push(f.fieldname); rebuild(); });
@@ -122,8 +102,8 @@
 			_addReload();
 		}
 
-		// Da der Editor das Widget bei Änderung von cfg.source_field NICHT neu mountet,
-		// gibt es einen manuellen "neu laden"-Knopf (liest cfg.source_field frisch).
+		// Da der Editor das Widget bei Änderung von cfg.input_doctype NICHT neu mountet,
+		// gibt es einen manuellen "neu laden"-Knopf (liest cfg.input_doctype frisch).
 		function _addReload() {
 			$('<button class="btn btn-xs ppk-reload">↻ Quelle neu laden</button>')
 				.appendTo($box)

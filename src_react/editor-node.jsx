@@ -7,6 +7,10 @@ import { TASK_TYPES } from "./data.js";
 
 export const NODE_W = 280;
 export const NODE_W_COMPACT = 240;
+
+// Task-Typen, deren Quell-Objekt per Verdrahtung kommt (Objekt-Input-Port statt Payload-Dropdown).
+// Diese Knoten zeigen einen obj-in-Port, solange nichts ans Objekt verdrahtet ist.
+export const OBJ_INPUT_TASK_TYPES = new Set(["fill_fields", "derive"]);
 // HEADER_H accounts for: 1px node border-top + actual header content height (~53px).
 // Measured against rendered DOM rather than computed from padding+content alone.
 export const HEADER_H = 54;
@@ -184,7 +188,9 @@ export function Node({
         />
       </span>
 
-      {node.task_type === "fill_fields" && ports.payloadIn.length === 0 && (() => {
+      {/* Objekt-Input-Port: fuer Knoten, deren Quelle per Verdrahtung kommt (fill_fields, derive),
+          solange noch nichts ans Objekt verdrahtet ist. Das Ziel-Doctype-Label kommt aus der Config. */}
+      {OBJ_INPUT_TASK_TYPES.has(node.task_type) && ports.payloadIn.length === 0 && (() => {
         let dt = "";
         try { dt = (JSON.parse(node.konfig_json || "{}").input_doctype || ""); } catch (_) {}
         const objHot = hotPort && hotPort.node === node.step_key && hotPort.port === "obj-in";

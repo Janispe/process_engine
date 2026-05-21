@@ -637,14 +637,15 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 
 
 class DeriveTaskHandler(BaseTaskHandler):
-	"""Auto-Run-Node: leitet einen Wert aus einem Payload-Objekt ueber einen Pfad ab.
+	"""Auto-Run-Node: leitet einen Wert aus einem Objekt (= Input des Knotens) ueber einen Pfad ab.
 
 	Config (konfig_json):
-	  - source_field: Payload-Feld, das den Quell-Docname haelt (Link-Feld-Spec)
-	  - source_doctype: Doctype des Quell-Objekts (vom Pfad-Picker aus der Feld-Spec gesetzt)
-	  - path: Punkt-Pfad im Quell-Doctype (z.B. "wohnung" oder "wohnung.immobilie"),
+	  - input_doctype: Doctype des Quell-Objekts (in der Config gewaehlt)
+	  - path: Punkt-Pfad im input_doctype (z.B. "wohnung" oder "wohnung.immobilie"),
 	    virtuell-bewusst aufgeloest (siehe path_resolver).
 	  - store_in_payload_field: Payload-Feld fuer das Ergebnis
+	  - source_field: Payload-Link-Feld = das konkrete Quell-Objekt. Wird NICHT im Dropdown
+	    gesetzt, sondern durch Verdrahten im Editor (Payload-Feld -> Objekt-Input-Port des Knotens).
 
 	Laeuft automatisch (kein Mensch): die Engine fuehrt run_action aus, sobald das
 	source_field im Payload vorhanden ist (Auto-Run). `is_auto` markiert das fuer den
@@ -655,9 +656,10 @@ class DeriveTaskHandler(BaseTaskHandler):
 	is_auto = True
 
 	def config_schema(self) -> dict | None:
+		# source_field wird nicht hier gewaehlt, sondern im Canvas verdrahtet (Objekt-Input-Port).
 		return {
 			"fields": [
-				{"key": "source_field", "label": _("Quelle (Payload-Feld)"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+				{"key": "input_doctype", "label": _("Quell-Doctype"), "fieldtype": "Link", "options": "DocType", "reqd": 1},
 				{"key": "path", "label": _("Pfad"), "fieldtype": "Data", "widget": "path_picker", "reqd": 1},
 				{"key": "store_in_payload_field", "label": _("Ergebnis-Feld (Name)"), "fieldtype": "Data", "reqd": 1},
 			]
@@ -669,26 +671,32 @@ class DeriveTaskHandler(BaseTaskHandler):
 		field = (config.get("store_in_payload_field") or "").strip()
 		if not field:
 			return []
-		source_doctype = (config.get("source_doctype") or "").strip()
+		input_doctype = (config.get("input_doctype") or "").strip()
 		path = (config.get("path") or "").strip()
-		fieldtype, options = path_terminal_type(source_doctype, path) if (source_doctype and path) else ("Data", "")
+		fieldtype, options = path_terminal_type(input_doctype, path) if (input_doctype and path) else ("Data", "")
 		return [{"fieldname": field, "fieldtype": fieldtype, "options": options}]
+
+	def declared_inputs(self, config: dict) -> list[str]:
+		# Das verdrahtete Quell-Objekt -> als payload_input gefuehrt (wie fill_fields).
+		f = (config.get("source_field") or "").strip()
+		return [f] if f else []
 
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
-		for key in ("source_field", "path", "store_in_payload_field", "source_doctype"):
+		for key in ("input_doctype", "path", "store_in_payload_field"):
 			if not (config.get(key) or "").strip():
 				frappe.throw(_("derive erfordert '{0}' in der Konfig.").format(key))
 
-		source_doctype = config["source_doctype"].strip()
+		input_doctype = config["input_doctype"].strip()
 		# Pfad gegen Meta validieren -> kaputte Pfade fallen beim Speichern auf, nicht erst
 		# zur Laufzeit als geloggter Auto-Run-Fehler.
 		from process_engine.process_engine.processes.path_resolver import validate_path
 
-		validate_path(source_doctype, config["path"].strip())
+		validate_path(input_doctype, config["path"].strip())
 
 		# Best-effort Cross-Check gegen die Versions-Feldspecs: prozess_version.py setzt sie als
 		# row.flags.version_payload_specs. Im Temporal-/Seed-Pfad (frappe._dict) fehlt das -> skip.
+		# source_field ist optional (per Verdrahtung gesetzt); nur WENN gesetzt, wird der Typ geprueft.
 		specs = None
 		flags = getattr(step_or_task, "flags", None)
 		if flags is not None:
@@ -696,19 +704,16 @@ class DeriveTaskHandler(BaseTaskHandler):
 				specs = flags.get("version_payload_specs")
 			except Exception:
 				specs = None
-		if specs is not None:
-			# Nur die QUELLE wird gegen die Specs geprueft (sie ist ein vom Nutzer deklarierter
-			# Start-Input). Das Ergebnis-Feld (store_in_payload_field) wird NICHT geprueft — es
-			# wird typ-getrieben automatisch angelegt (declared_outputs + _sync_declared_outputs).
+		src_field = (config.get("source_field") or "").strip()
+		if specs is not None and src_field:
 			by_name = {(s.get("fieldname") or "").strip(): s for s in specs}
-			src_field = config["source_field"].strip()
 			src_spec = by_name.get(src_field)
 			if src_spec is None:
 				frappe.throw(_("derive: source_field '{0}' ist kein deklariertes Payload-Feld.").format(src_field))
-			if (src_spec.get("fieldtype") or "") != "Link" or (src_spec.get("options") or "").strip() != source_doctype:
+			if (src_spec.get("fieldtype") or "") != "Link" or (src_spec.get("options") or "").strip() != input_doctype:
 				frappe.throw(
 					_("derive: source_field '{0}' muss ein Link auf {1} sein (laut Payload-Feld-Spec).").format(
-						src_field, source_doctype
+						src_field, input_doctype
 					)
 				)
 
@@ -738,10 +743,10 @@ class DeriveTaskHandler(BaseTaskHandler):
 
 		config = extract_task_config(task_row)
 		source_field = (config.get("source_field") or "").strip()
-		source_doctype = (config.get("source_doctype") or "").strip()
+		input_doctype = (config.get("input_doctype") or "").strip()
 		path = (config.get("path") or "").strip()
 		out_field = (config.get("store_in_payload_field") or "").strip()
-		if not (source_field and source_doctype and path and out_field):
+		if not (source_field and input_doctype and path and out_field):
 			frappe.throw(_("derive-Task ist nicht korrekt konfiguriert."))
 
 		if hasattr(doc, "payload") and callable(doc.payload):
@@ -754,7 +759,7 @@ class DeriveTaskHandler(BaseTaskHandler):
 			# damit ein spaeter eintreffender Input noch verarbeitet wird (Defense-in-Depth zu
 			# can_auto_run, das diesen Fall im Auto-Run bereits abfaengt).
 			return {"field": out_field, "value": None, "skipped": True}
-		value = resolve_path(source_doctype, source_name, path)
+		value = resolve_path(input_doctype, source_name, path)
 		if value is None or value == "":
 			# Quelle da, aber der (Zwischen-)Wert ist noch nicht aufloesbar — z.B.
 			# wohnung.aktueller_mietvertrag, bevor ein Vertrag existiert. NICHT abschliessen und

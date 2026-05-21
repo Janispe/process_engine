@@ -768,17 +768,18 @@ export function App({
       toast("Trigger-Linien sind automatisch — verbinde I/O statt Trigger zu ziehen", "err");
       return;
     }
-    // fill_fields: Payload-Feld-Output -> Objekt-Input-Port. Legt payload_input an und merkt
-    // das Feld als Quelle (konfig.source_field). Typ-Check: Feld muss Link auf input_doctype sein.
+    // Objekt-Input-Port (fill_fields, derive, ...): Payload-Feld-Output -> obj-in. Legt
+    // payload_input an und merkt das Feld als Quelle (konfig.source_field). Typ-Check: Feld
+    // muss Link auf den in der Config gewaehlten input_doctype sein.
     if (src.srcPort === "obj-in" || dst.port === "obj-in") {
-      const fillNode = src.srcPort === "obj-in" ? src.srcNode : dst.node;
+      const objNode = src.srcPort === "obj-in" ? src.srcNode : dst.node;
       const otherPort = src.srcPort === "obj-in" ? dst.port : src.srcPort;
       if (!otherPort || !otherPort.startsWith("out:")) {
         toast("Ziehe ein Feld (Start-Input oder Producer-Output) auf den Objekt-Input", "err");
         return;
       }
       const field = otherPort.slice(4);
-      const step = schritte.find((s) => s.step_key === fillNode);
+      const step = schritte.find((s) => s.step_key === objNode);
       let cfg = {};
       try { cfg = JSON.parse((step && step.konfig_json) || "{}") || {}; } catch (e) { cfg = {}; }
       const wantDt = (cfg.input_doctype || "").trim();
@@ -787,8 +788,8 @@ export function App({
         toast(`Feld muss ein Link auf ${wantDt || "den Objekt-Doctype"} sein`, "err");
         return;
       }
-      addIO({ step_key: fillNode, kind: "payload_input", target: field });
-      patchStep(fillNode, { konfig_json: JSON.stringify({ ...cfg, source_field: field }) });
+      addIO({ step_key: objNode, kind: "payload_input", target: field });
+      patchStep(objNode, { konfig_json: JSON.stringify({ ...cfg, source_field: field }) });
       toast(`Objekt verbunden: ${field}`);
       return;
     }

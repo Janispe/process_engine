@@ -51,7 +51,7 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		doc = _FakeDoc({"src": "User"})
 		row = _FakeRow({
 			"source_field": "src",
-			"source_doctype": "DocType",
+			"input_doctype": "DocType",
 			"path": "module",
 			"store_in_payload_field": "out",
 		})
@@ -65,7 +65,7 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		doc = _FakeDoc({"src": "User"})
 		row = _FakeRow({
 			"source_field": "src",
-			"source_doctype": "DocType",
+			"input_doctype": "DocType",
 			"path": "module.name",
 			"store_in_payload_field": "out",
 		})
@@ -78,7 +78,7 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		doc = _FakeDoc({"src": "User"})
 		row = _FakeRow({
 			"source_field": "src",
-			"source_doctype": "DocType",
+			"input_doctype": "DocType",
 			"path": "module.some_missing_link",
 			"store_in_payload_field": "out",
 		})
@@ -96,7 +96,7 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		doc = _FakeDoc({"src": "User"})
 		row = _FakeRow({
 			"source_field": "src",
-			"source_doctype": "DocType",
+			"input_doctype": "DocType",
 			"path": "irgendwas",
 			"store_in_payload_field": "out",
 		})
@@ -114,7 +114,7 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		doc = _FakeDoc({})
 		row = _FakeRow({
 			"source_field": "src",
-			"source_doctype": "DocType",
+			"input_doctype": "DocType",
 			"path": "module",
 			"store_in_payload_field": "out",
 		})
@@ -122,19 +122,19 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		self.assertIsNone(res["value"])
 		self.assertIsNone(doc.payload("out"))
 
-	def test_validate_config_requires_source_doctype(self):
+	def test_validate_config_requires_input_doctype(self):
 		row = _FakeRow({
 			"source_field": "src",
 			"path": "module",
 			"store_in_payload_field": "out",
-		})  # source_doctype fehlt (Pfad-Picker setzt es normalerweise)
+		})  # input_doctype fehlt (wird in der Config gewaehlt)
 		with self.assertRaises(frappe.ValidationError):
 			DeriveTaskHandler().validate_config(row)
 
 	def test_validate_config_ok(self):
 		row = _FakeRow({
 			"source_field": "src",
-			"source_doctype": "DocType",
+			"input_doctype": "DocType",
 			"path": "module",
 			"store_in_payload_field": "out",
 		})
@@ -145,7 +145,7 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		# Finding 4: Pfad gegen Meta validieren -> kaputter Pfad faellt beim Save auf.
 		row = _FakeRow({
 			"source_field": "src",
-			"source_doctype": "DocType",
+			"input_doctype": "DocType",
 			"path": "gibt_es_nicht_xyz",
 			"store_in_payload_field": "out",
 		})
@@ -154,11 +154,11 @@ class TestDeriveTaskHandler(FrappeTestCase):
 
 	def test_validate_config_cross_check_source_field_must_be_link(self):
 		# Finding 4: mit Versions-Specs (Flag) wird geprueft, dass source_field ein Link auf
-		# source_doctype ist. Hier ist src als Data deklariert -> Fehler.
+		# input_doctype ist. Hier ist src als Data deklariert -> Fehler.
 		row = _FakeRow(
 			{
 				"source_field": "src",
-				"source_doctype": "DocType",
+				"input_doctype": "DocType",
 				"path": "module",
 				"store_in_payload_field": "out",
 			},
@@ -174,7 +174,7 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		row = _FakeRow(
 			{
 				"source_field": "src",
-				"source_doctype": "DocType",
+				"input_doctype": "DocType",
 				"path": "module",
 				"store_in_payload_field": "out",
 			},
@@ -223,7 +223,7 @@ class TestDeriveAutoRunIntegration(FrappeTestCase):
 				"step_key": "step_derive", "titel": "Modul ableiten", "pflicht": 1,
 				"task_type": TASK_TYPE_DERIVE, "sichtbar_fuer_prozess_typ": "Beide", "reihenfolge": 10,
 				"konfig_json": json.dumps({
-					"source_field": "src_doc", "source_doctype": "DocType",
+					"source_field": "src_doc", "input_doctype": "DocType",
 					"path": "module", "store_in_payload_field": "out_val",
 				}),
 			}],
