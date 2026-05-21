@@ -232,4 +232,33 @@ def build_trigger_payload(trigger_id: str, source_name: str) -> dict:
 	payload = trigger.payload_builder(source_doc) or {}
 	if not isinstance(payload, dict):
 		frappe.throw(_("payload_builder muss ein Dict zurueckgeben (got {0}).").format(type(payload).__name__))
+	# Phase 3: deklaratives Input-Mapping ueberlagert den payload_builder.
+	payload = _apply_trigger_input_mapping(trigger, source_name, payload)
 	return payload
+
+
+def _apply_trigger_input_mapping(trigger, source_name: str, payload: dict) -> dict:
+	"""Legt das deklarative input_mapping eines Triggers ueber die payload_builder-Ausgabe.
+
+	Pro Payload-Feld: kind 'path' -> resolve_path(source_doctype, source_name, path)
+	(virtuell-bewusst, inkl. Link-Drilldown); 'fixed' -> value; 'manual'/'none'/'' ->
+	Feld bleibt ungesetzt (User fuellt es im neuen Formular). Felder, die das Mapping
+	deklariert, gewinnen ueber gleichnamige payload_builder-Eintraege.
+	"""
+	mapping = getattr(trigger, "input_mapping", None) or {}
+	if not mapping:
+		return payload
+	from process_engine.process_engine.processes.path_resolver import resolve_path
+
+	out = dict(payload)
+	for field, spec in mapping.items():
+		field = (field or "").strip()
+		if not field or not isinstance(spec, dict):
+			continue
+		kind = (spec.get("kind") or "").strip()
+		if kind == "path":
+			out[field] = resolve_path(trigger.source_doctype, source_name, spec.get("path") or "")
+		elif kind == "fixed":
+			out[field] = spec.get("value")
+		# "manual"/"none"/"" -> bewusst nicht setzen
+	return out

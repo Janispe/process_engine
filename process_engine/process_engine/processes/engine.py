@@ -72,6 +72,11 @@ class ProcessTrigger:
 	button_group: str = "Workflow"
 	payload_builder: Callable[[Document], dict] = _default_payload_builder
 	visibility_check: Callable[[Document], bool] | None = None
+	# Phase 3: deklaratives Input-Mapping, ueber den payload_builder gelegt.
+	# {payload_field: {"kind": "path"|"fixed"|"manual"|"none", "path"?: str, "value"?: any}}.
+	# "path" -> path_resolver.resolve_path(source_doctype, source_name, path) (virtuell-bewusst);
+	# "fixed" -> value; "manual"/"none" -> Feld bleibt leer (User fuellt es im neuen Formular).
+	input_mapping: dict | None = None
 
 
 @dataclass(frozen=True)
