@@ -343,8 +343,10 @@ async function _render_visual_editor(frm) {
 
 	field.$wrapper.empty();
 	const container = document.createElement("div");
+	// Hoehe responsiv an den Viewport koppeln (statt fix 800px), damit auf kleineren
+	// Bildschirmen nichts ueberlaeuft; .app fuellt den Container per height:100%.
 	container.style.cssText =
-		"position: relative; height: 800px; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;";
+		"position: relative; height: 80vh; min-height: 520px; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;";
 	field.$wrapper.append(container);
 
 	// Bridge: React mutiert nie direkt frm.doc — alle Aenderungen laufen ueber
