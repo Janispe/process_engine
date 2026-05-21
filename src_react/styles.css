@@ -525,6 +525,15 @@ button { font-family: inherit; }
 }
 .port.step-input .dot { border-style: dashed; }
 
+/* Objekt-Input (fill_fields/derive): Hinweis-Zeile, bis ein Payload-Feld verdrahtet ist. */
+.port.obj-in .port-name {
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent, #6366f1);
+}
+.port.obj-in .dot { border-style: dashed; }
+
 .node-footer {
   display: flex;
   align-items: center;

@@ -19,6 +19,7 @@ import {
   getProcessInputFields,
   getPIHeight,
   ttStyle,
+  OBJ_INPUT_TASK_TYPES,
 } from "./editor-node.jsx";
 import { EdgesLayer, PreviewEdge, MiniMap, deriveEdges } from "./editor-edges.jsx";
 import {
@@ -903,6 +904,16 @@ export function App({
     setHotTarget({ node: nodeKey, port: portId });
   }
 
+  // Vorbelegung des Ziel-Ports beim Hovern eines Knotens (man muss nicht exakt den kleinen Dot
+  // treffen): unverdrahteter fill_fields/derive-Knoten + Feld-Quelle -> Objekt-Input; sonst
+  // der Predecessor-Port (step-in).
+  function _fallbackDropPort(node, nodePorts, conn) {
+    const usesObjIn = OBJ_INPUT_TASK_TYPES.has(node.task_type) && nodePorts.payloadIn.length === 0;
+    const fieldSource = conn && (conn.srcKind === "payload" || conn.srcKind === "process_input");
+    if (usesObjIn && fieldSource) return { node: node.step_key, port: "obj-in" };
+    return { node: node.step_key, port: "step-in" };
+  }
+
   function onNodeMouseDownHeader(e, nodeKey) {
     if (isLocked) return;
     const node = schritte.find((s) => s.step_key === nodeKey);
@@ -1092,7 +1103,7 @@ export function App({
               const validTarget = connect && connect.srcNode !== s.step_key ? "valid" : null;
               return (
                 <div key={s.step_key}
-                     onMouseEnter={() => connect && setHotTarget((h) => h || { node: s.step_key, port: "step-in" })}
+                     onMouseEnter={() => connect && setHotTarget(_fallbackDropPort(s, ports, connect))}
                      style={{ position: "absolute" }}>
                   <Node
                     node={s}
