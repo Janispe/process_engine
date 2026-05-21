@@ -195,6 +195,19 @@ def _make_jinja_payload_builder(template_str: str) -> Callable[[Document], dict]
 	return builder
 
 
+def _parse_trigger_input_mapping(raw) -> dict | None:
+	"""Parst input_mapping_json einer DB-Trigger-Zeile zu einem Dict (oder None)."""
+	raw = (raw or "").strip()
+	if not raw:
+		return None
+	try:
+		data = json.loads(raw)
+	except Exception:
+		frappe.log_error(title="Prozess Trigger: input_mapping_json ungueltig", message=str(raw)[:500])
+		return None
+	return data if isinstance(data, dict) else None
+
+
 def get_runtime_config_for_typ(prozess_typ_name: str) -> ProcessRuntimeConfig | None:
 	"""Baut zur Laufzeit eine ProcessRuntimeConfig aus einem Prozess Typ-Doc.
 	Plugins werden aus ProcessPluginRegistry aufgeloest (Code-defined).
@@ -251,6 +264,7 @@ def get_runtime_config_for_typ(prozess_typ_name: str) -> ProcessRuntimeConfig | 
 			button_label=(t.button_label or "").strip(),
 			button_group=(t.button_group or "Workflow").strip() or "Workflow",
 			payload_builder=_make_jinja_payload_builder(t.payload_template or ""),
+			input_mapping=_parse_trigger_input_mapping(t.get("input_mapping_json")),
 		)
 		for t in (typ.triggers or [])
 	)

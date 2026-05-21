@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
+import uuid
+
+import frappe
 from frappe.tests.utils import FrappeTestCase
 
-from process_engine.process_engine.processes.engine import ProcessTrigger
+from process_engine.process_engine.processes.engine import (
+	ProcessTrigger,
+	get_runtime_config_for_typ,
+)
 from process_engine.process_engine.processes.triggers import _apply_trigger_input_mapping
 
 # Deterministisch ohne Domaenen-Daten: DocType "User" liegt im Modul "Core".
@@ -40,3 +47,46 @@ class TestTriggerInputMapping(FrappeTestCase):
 		t = ProcessTrigger(key="t", source_doctype="DocType", button_label="x")
 		out = _apply_trigger_input_mapping(t, "User", {"a": 1})
 		self.assertEqual(out, {"a": 1})
+
+
+class TestDbTriggerInputMapping(FrappeTestCase):
+	"""DB-Trigger (Prozess Typ): input_mapping_json wird in ProcessTrigger.input_mapping geparst."""
+
+	def test_get_runtime_config_parses_input_mapping_json(self):
+		typ_name = f"_tim_{uuid.uuid4().hex[:8]}"
+		typ = frappe.get_doc({
+			"doctype": "Prozess Typ", "name1": typ_name, "label": "TIM Test",
+			"is_active": 1, "default_process_type": "Beide",
+			"triggers": [{
+				"key": "from_wohnung", "source_doctype": "Wohnung", "button_label": "Start",
+				"input_mapping_json": json.dumps({
+					"alter_mietvertrag": {"kind": "path", "path": "aktueller_mietvertrag"},
+					"prozess_typ": {"kind": "fixed", "value": "mieterwechsel"},
+				}),
+			}],
+		}).insert(ignore_permissions=True)
+		try:
+			cfg = get_runtime_config_for_typ(typ.name)
+			self.assertIsNotNone(cfg)
+			trig = next(t for t in cfg.triggers if t.key == "from_wohnung")
+			self.assertEqual(trig.input_mapping["alter_mietvertrag"], {"kind": "path", "path": "aktueller_mietvertrag"})
+			self.assertEqual(trig.input_mapping["prozess_typ"], {"kind": "fixed", "value": "mieterwechsel"})
+		finally:
+			frappe.delete_doc("Prozess Typ", typ.name, force=True, ignore_permissions=True)
+
+	def test_invalid_input_mapping_json_is_none(self):
+		typ_name = f"_tim_{uuid.uuid4().hex[:8]}"
+		typ = frappe.get_doc({
+			"doctype": "Prozess Typ", "name1": typ_name, "label": "TIM Bad",
+			"is_active": 1, "default_process_type": "Beide",
+			"triggers": [{
+				"key": "from_wohnung", "source_doctype": "Wohnung", "button_label": "Start",
+				"input_mapping_json": "{ kaputt",  # ungueltiges JSON
+			}],
+		}).insert(ignore_permissions=True)
+		try:
+			cfg = get_runtime_config_for_typ(typ.name)
+			trig = next(t for t in cfg.triggers if t.key == "from_wohnung")
+			self.assertIsNone(trig.input_mapping)
+		finally:
+			frappe.delete_doc("Prozess Typ", typ.name, force=True, ignore_permissions=True)

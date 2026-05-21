@@ -11,6 +11,8 @@
   "button_label",
   "button_group",
   "payload_template",
+  "input_mapping_json",
+  "edit_input_mapping",
   "visibility_when"
  ],
  "fields": [
@@ -51,6 +53,19 @@
    "options": "Jinja"
   },
   {
+   "description": "Deklaratives Input-Mapping (JSON): {payload_field: {\"kind\": \"path\"|\"fixed\"|\"manual\"|\"none\", \"path\"?: str, \"value\"?: any}}. Wird ueber das Payload-Template gelegt. Bequem editierbar ueber den Button \"Input-Mapping bearbeiten\".",
+   "fieldname": "input_mapping_json",
+   "fieldtype": "Code",
+   "label": "Input-Mapping (JSON)",
+   "options": "JSON"
+  },
+  {
+   "description": "Komfort-Editor: pro Payload-Feld die Quelle waehlen (Pfad vom Quell-Objekt / fest / manuell).",
+   "fieldname": "edit_input_mapping",
+   "fieldtype": "Button",
+   "label": "Input-Mapping bearbeiten"
+  },
+  {
    "description": "Optional: JSONLogic-Expression, wann der Button sichtbar sein soll. Leer = immer sichtbar.",
    "fieldname": "visibility_when",
    "fieldtype": "Code",
@@ -62,7 +77,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-05-18 00:00:00.000000",
+ "modified": "2026-05-21 00:00:02.000000",
  "modified_by": "Administrator",
  "module": "Process Engine",
  "name": "Prozess Trigger Definition",
