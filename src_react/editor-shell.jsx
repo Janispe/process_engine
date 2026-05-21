@@ -524,9 +524,12 @@ export function App({
   const schritte = useMemo(() => {
     const base = withFallbackPositions(schritteRaw, schritt_io, density);
     if (!Object.keys(posOverride).length) return base;
+    // posOverride haelt nicht nur Drag-Positionen, sondern JEDE lokal gepatchte Eigenschaft
+    // (pflicht, titel, task_type, ...). Der Host re-rendert bei onPatchStep nicht; dieser
+    // Merge sorgt fuer sofortiges visuelles Feedback bis zum naechsten Re-Mount.
     return base.map((s) => {
       const o = posOverride[s.step_key];
-      return o ? { ...s, editor_x: o.editor_x, editor_y: o.editor_y } : s;
+      return o ? { ...s, ...o } : s;
     });
   }, [schritteRaw, schritt_io, density, posOverride]);
 
@@ -640,7 +643,12 @@ export function App({
   };
 
   // ===== Mutations: delegate to host callbacks =====
-  const patchStep = (sk, patch) => { if (isLocked || !onPatchStep) return; onPatchStep(sk, patch); };
+  const patchStep = (sk, patch) => {
+    if (isLocked || !onPatchStep) return;
+    // Lokalen Override sofort setzen (instant re-render) UND in frm.doc persistieren.
+    setPosOverride((p) => ({ ...p, [sk]: { ...(p[sk] || {}), ...patch } }));
+    onPatchStep(sk, patch);
+  };
   const addStep = (s) => { if (isLocked || !onAddStep) return; onAddStep(s); };
   const deleteStep = (sk) => {
     if (isLocked || !onDeleteStep) return;
