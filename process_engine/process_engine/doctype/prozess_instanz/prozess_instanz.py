@@ -297,3 +297,56 @@ def run_task_action(docname: str, row_name: str, action_key: str, payload_json: 
 			pass
 	params["row_name"] = row_name
 	return engine.dispatch_workflow_action(docname, dispatch_action, payload_json=json.dumps(params))
+
+
+@frappe.whitelist()
+def get_instance_payload_view(docname: str) -> list[dict]:
+	"""Laufzeit-Kontext-Panel: aktueller Payload der Instanz, typ-angereichert.
+
+	Joint die Werte (payload_json) mit den Feld-Specs der referenzierten Version. Liefert pro
+	Feld {fieldname, label, fieldtype, link_doctype, value, is_set} — Link-Felder kann der
+	Client damit als klickbaren Verweis (/app/<doctype>/<value>) rendern, der waehrend des
+	Abarbeitens dauerhaft sichtbar bleibt. Genau dafuer sind die typisierten Payload-Felder da.
+	"""
+	doc = frappe.get_doc("Prozess Instanz", docname)
+	doc.check_permission("read")
+
+	try:
+		payload = json.loads(doc.payload_json or "{}")
+		if not isinstance(payload, dict):
+			payload = {}
+	except (ValueError, TypeError):
+		payload = {}
+
+	# Specs der referenzierten Version; Fallback auf die aktive Version des Typs (z.B. wenn
+	# das Versionsfeld bei sehr alten Instanzen leer ist).
+	version_name = (doc.get("prozess_version") or "").strip()
+	if not version_name:
+		version_name = (
+			frappe.db.get_value(
+				"Prozess Version",
+				{"prozess_typ": (doc.get("prozess_typ") or "").strip(), "is_active": 1},
+				"name",
+			)
+			or ""
+		)
+	specs = []
+	if version_name and frappe.db.exists("Prozess Version", version_name):
+		specs = frappe.get_cached_doc("Prozess Version", version_name).get("payload_field_specs") or []
+
+	out: list[dict] = []
+	for s in specs:
+		fn = (s.get("fieldname") or "").strip()
+		if not fn:
+			continue
+		fieldtype = (s.get("fieldtype") or "Data").strip()
+		value = payload.get(fn)
+		out.append({
+			"fieldname": fn,
+			"label": (s.get("label") or "").strip() or fn,
+			"fieldtype": fieldtype,
+			"link_doctype": (s.get("options") or "").strip() if fieldtype == "Link" else "",
+			"value": value,
+			"is_set": value not in (None, ""),
+		})
+	return out
