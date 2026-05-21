@@ -680,6 +680,12 @@ class DeriveTaskHandler(BaseTaskHandler):
 			# can_auto_run, das diesen Fall im Auto-Run bereits abfaengt).
 			return {"field": out_field, "value": None, "skipped": True}
 		value = resolve_path(source_doctype, source_name, path)
+		if value is None or value == "":
+			# Quelle da, aber der (Zwischen-)Wert ist noch nicht aufloesbar — z.B.
+			# wohnung.aktueller_mietvertrag, bevor ein Vertrag existiert. NICHT abschliessen und
+			# keinen Output setzen, damit es bei einem spaeteren Save erneut laeuft. (0/False
+			# gelten bewusst als gueltige Ergebnisse und schliessen ab.)
+			return {"field": out_field, "value": value, "skipped": True}
 
 		if hasattr(doc, "payload_set") and callable(doc.payload_set):
 			doc.payload_set(out_field, value)

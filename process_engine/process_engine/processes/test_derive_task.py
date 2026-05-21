@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -70,6 +71,43 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		})
 		DeriveTaskHandler().run_action(None, doc, row)
 		self.assertEqual(doc.payload("out"), "Core")
+
+	def test_run_action_none_result_does_not_complete(self):
+		# Finding 5: Quelle da, aber resolve_path liefert None (z.B. wohnung.aktueller_mietvertrag
+		# vor Vertragsanlage) -> NICHT abschliessen, kein Output, damit es spaeter erneut laeuft.
+		doc = _FakeDoc({"src": "User"})
+		row = _FakeRow({
+			"source_field": "src",
+			"source_doctype": "DocType",
+			"path": "module.some_missing_link",
+			"store_in_payload_field": "out",
+		})
+		with patch(
+			"process_engine.process_engine.processes.path_resolver.resolve_path",
+			return_value=None,
+		):
+			res = DeriveTaskHandler().run_action(None, doc, row)
+		self.assertTrue(res.get("skipped"))
+		self.assertIsNone(doc.payload("out"))
+		self.assertEqual(row.status, "Offen")  # nicht abgeschlossen
+
+	def test_run_action_falsy_zero_completes(self):
+		# 0/False sind gueltige Ergebnisse -> Schritt schliesst ab.
+		doc = _FakeDoc({"src": "User"})
+		row = _FakeRow({
+			"source_field": "src",
+			"source_doctype": "DocType",
+			"path": "irgendwas",
+			"store_in_payload_field": "out",
+		})
+		with patch(
+			"process_engine.process_engine.processes.path_resolver.resolve_path",
+			return_value=0,
+		):
+			res = DeriveTaskHandler().run_action(None, doc, row)
+		self.assertFalse(res.get("skipped"))
+		self.assertEqual(doc.payload("out"), 0)
+		self.assertEqual(row.status, "Erledigt")
 
 	def test_run_action_missing_source_value_yields_none(self):
 		# Quelle (noch) leer -> Ergebnis None, kein Fehler (Auto-Run wartet sonst nicht).
@@ -240,7 +278,5 @@ class TestDeriveAutoRunIntegration(FrappeTestCase):
 			self.assertEqual((derive_row.status or "").strip(), "Erledigt")
 		finally:
 			frappe.delete_doc("Prozess Instanz", inst.name, force=True, ignore_permissions=True)
-			frappe.delete_doc("Prozess Version", version.name, force=True, ignore_permissions=True)
-			frappe.delete_doc("Prozess Typ", typ.name, force=True, ignore_permissions=True)
 			frappe.delete_doc("Prozess Version", version.name, force=True, ignore_permissions=True)
 			frappe.delete_doc("Prozess Typ", typ.name, force=True, ignore_permissions=True)
