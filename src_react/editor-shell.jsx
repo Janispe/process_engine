@@ -24,7 +24,6 @@ import { EdgesLayer, PreviewEdge, MiniMap, deriveEdges } from "./editor-edges.js
 import {
   KonfigEditor,
   RawJsonDialog,
-  OutputDeclareDialog,
   AddFieldDialog,
   DocFieldMappingDialog,
   Legend,
@@ -281,7 +280,8 @@ function Inspector({
               <div className="io-row" key={`${r.kind}:${r.target}:${i}`}>
                 <span className={`kind ${kindCls}`}>{kindLabel}</span>
                 <span className="tgt">{r.target}</span>
-                {!readOnly && (
+                {/* payload_output ist auto-verwaltet (folgt aus der Konfig) -> kein manuelles Loeschen */}
+                {!readOnly && r.kind !== "payload_output" && (
                   <button className="x" title="Entfernen"
                           onClick={() => onDeleteIO({ step_key: r.step_key, kind: r.kind, target: r.target })}>×</button>
                 )}
@@ -289,13 +289,9 @@ function Inspector({
             );
           })}
           {!readOnly && (
-            <button onClick={onOpenOutputDialog}
-                    style={{
-                      width: "100%", height: 32, marginTop: 8,
-                      border: "1px dashed var(--border-strong)", borderRadius: 6,
-                      background: "transparent", color: "var(--ink-2)",
-                      fontFamily: "inherit", fontSize: 12.5, fontWeight: 500, cursor: "pointer",
-                    }}>+ Output deklarieren</button>
+            <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--ink-3)" }}>
+              Outputs ergeben sich automatisch aus der Konfiguration dieses Aufgabentyps (beim Speichern).
+            </div>
           )}
         </div>
       </div>
@@ -557,7 +553,6 @@ export function App({
   // Dialogs
   const [addOpen, setAddOpen] = useState(false);
   const [rawJsonDialog, setRawJsonDialog] = useState(null);
-  const [outputDialog, setOutputDialog] = useState(null);
   const [mappingDialog, setMappingDialog] = useState(null);
   const [addFieldOpen, setAddFieldOpen] = useState(false);
   const [editingField, setEditingField] = useState(null);  // spec beim Bearbeiten, sonst null
@@ -1101,7 +1096,6 @@ export function App({
           onPatchStep={(patch) => patchStep(selectedKey, patch)}
           onDeleteStep={() => deleteStep(selectedKey)}
           onDeleteIO={removeIO}
-          onOpenOutputDialog={() => setOutputDialog({ stepKey: selectedKey })}
           onOpenRawJson={(payload) => setRawJsonDialog(payload)}
           onOpenMapping={(payload) => setMappingDialog(payload)}
         />
@@ -1145,31 +1139,6 @@ export function App({
           onSave={(patch) => {
             if (!isLocked && onPatchField && editingField) onPatchField(editingField.fieldname, patch);
             setAddFieldOpen(false); setEditingField(null);
-          }}
-        />
-
-        <OutputDeclareDialog
-          open={!!outputDialog}
-          stepKey={outputDialog ? outputDialog.stepKey : ""}
-          availableFields={
-            outputDialog
-              ? payload_field_specs.map((f) => f.fieldname)
-                  .filter((fn) => !schritt_io.some((r) => r.kind === "payload_output" && r.target === fn))
-              : []
-          }
-          existingNames={new Set(payload_field_specs.map((f) => f.fieldname))}
-          onCancel={() => setOutputDialog(null)}
-          onDeclare={(target) => {
-            addIO({ step_key: outputDialog.stepKey, kind: "payload_output", target });
-            toast(`Output ${target} deklariert`);
-            setOutputDialog(null);
-          }}
-          onDeclareNew={(spec) => {
-            const stepKey = outputDialog.stepKey;
-            if (!isLocked && onAddField) onAddField(spec);
-            addIO({ step_key: stepKey, kind: "payload_output", target: spec.fieldname });
-            toast(`Output ${spec.fieldname} angelegt`);
-            setOutputDialog(null);
           }}
         />
 

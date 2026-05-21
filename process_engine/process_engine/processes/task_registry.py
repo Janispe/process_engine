@@ -237,6 +237,15 @@ class BaseTaskHandler:
 		Quell-Inputs zu warten, statt mit leerem Input vorzeitig abzuschliessen."""
 		return True
 
+	def declared_outputs(self, config: dict) -> list[dict]:
+		"""Welche Payload-Felder PRODUZIERT dieser Aufgabentyp (aus seiner Config)?
+
+		Outputs sind typ-getrieben — der Nutzer deklariert sie NICHT manuell. Rueckgabe:
+		[{fieldname, fieldtype, options}]. Die Version-Validierung legt daraus automatisch
+		payload_field_specs (Name+Typ, auto_output=1) + payload_output-I/O an und entfernt
+		veraltete. Default: keine Outputs (manual_check, print_document, ...)."""
+		return []
+
 
 class ManualCheckTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_MANUAL_CHECK
@@ -245,11 +254,52 @@ class ManualCheckTaskHandler(BaseTaskHandler):
 class PythonActionTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_PYTHON_ACTION
 
+	def config_schema(self) -> dict | None:
+		# Variante A: python_action ist der einzige "beliebige" Typ -> der Dev deklariert
+		# seine Outputs explizit in der Config (JSON-Liste), damit sie ebenfalls typ-getrieben
+		# sind (kein manuelles Output-Anlegen am Knoten).
+		return {
+			"fields": [
+				{
+					"key": "outputs",
+					"label": _("Outputs (JSON-Liste)"),
+					"fieldtype": "Code",
+					"description": _('z.B. [{"fieldname": "neuer_vertrag", "fieldtype": "Link", "options": "Mietvertrag"}]'),
+				},
+			]
+		}
+
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
 		handler_key = (config.get("handler_key") or getattr(step_or_task, "handler_key", None) or "").strip()
 		if not handler_key:
 			frappe.throw(_("Aufgabentyp python_action erfordert handler_key."))
+
+	def declared_outputs(self, config: dict) -> list[dict]:
+		raw = config.get("outputs")
+		if isinstance(raw, str):
+			raw = raw.strip()
+			if not raw:
+				return []
+			try:
+				raw = json.loads(raw)
+			except (ValueError, TypeError):
+				return []
+		if not isinstance(raw, list):
+			return []
+		out: list[dict] = []
+		for o in raw:
+			if not isinstance(o, dict):
+				continue
+			fn = (o.get("fieldname") or "").strip()
+			if not fn:
+				continue
+			out.append({
+				"fieldname": fn,
+				"fieldtype": (o.get("fieldtype") or "Data").strip() or "Data",
+				"options": (o.get("options") or "").strip(),
+			})
+		return out
 
 	def run_action(self, context: TaskHandlerContext, doc: Document, task_row, payload: dict | None = None) -> dict:
 		frappe.throw(_("Kein Python-Handler fuer diese Aufgabe registriert."))
@@ -452,7 +502,7 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 		return {
 			"fields": [
 				{"key": "target_doctype", "label": _("Ziel-Doctype"), "fieldtype": "Link", "options": "DocType", "reqd": 1},
-				{"key": "store_in_payload_field", "label": _("Ergebnis in Payload-Feld"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+				{"key": "store_in_payload_field", "label": _("Ergebnis-Feld (Name)"), "fieldtype": "Data", "reqd": 1},
 				{"key": "doc_field_mapping", "label": _("Feld-Mapping"), "fieldtype": "Data", "widget": "doc_field_mapping"},
 			]
 		}
@@ -463,6 +513,13 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 			frappe.throw(_("create_linked_doc erfordert target_doctype in der Konfig."))
 		if not (config.get("store_in_payload_field") or "").strip():
 			frappe.throw(_("create_linked_doc erfordert store_in_payload_field in der Konfig."))
+
+	def declared_outputs(self, config: dict) -> list[dict]:
+		field = (config.get("store_in_payload_field") or "").strip()
+		if not field:
+			return []
+		target = (config.get("target_doctype") or "").strip()
+		return [{"fieldname": field, "fieldtype": "Link" if target else "Data", "options": target}]
 
 	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:
 		actions = super().runtime_actions(context, doc, task_row)
@@ -593,9 +650,20 @@ class DeriveTaskHandler(BaseTaskHandler):
 			"fields": [
 				{"key": "source_field", "label": _("Quelle (Payload-Feld)"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
 				{"key": "path", "label": _("Pfad"), "fieldtype": "Data", "widget": "path_picker", "reqd": 1},
-				{"key": "store_in_payload_field", "label": _("Ergebnis in Payload-Feld"), "fieldtype": "Data", "widget": "payload_field_select", "reqd": 1},
+				{"key": "store_in_payload_field", "label": _("Ergebnis-Feld (Name)"), "fieldtype": "Data", "reqd": 1},
 			]
 		}
+
+	def declared_outputs(self, config: dict) -> list[dict]:
+		from process_engine.process_engine.processes.path_resolver import path_terminal_type
+
+		field = (config.get("store_in_payload_field") or "").strip()
+		if not field:
+			return []
+		source_doctype = (config.get("source_doctype") or "").strip()
+		path = (config.get("path") or "").strip()
+		fieldtype, options = path_terminal_type(source_doctype, path) if (source_doctype and path) else ("Data", "")
+		return [{"fieldname": field, "fieldtype": fieldtype, "options": options}]
 
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
@@ -620,9 +688,11 @@ class DeriveTaskHandler(BaseTaskHandler):
 			except Exception:
 				specs = None
 		if specs is not None:
+			# Nur die QUELLE wird gegen die Specs geprueft (sie ist ein vom Nutzer deklarierter
+			# Start-Input). Das Ergebnis-Feld (store_in_payload_field) wird NICHT geprueft — es
+			# wird typ-getrieben automatisch angelegt (declared_outputs + _sync_declared_outputs).
 			by_name = {(s.get("fieldname") or "").strip(): s for s in specs}
 			src_field = config["source_field"].strip()
-			out_field = config["store_in_payload_field"].strip()
 			src_spec = by_name.get(src_field)
 			if src_spec is None:
 				frappe.throw(_("derive: source_field '{0}' ist kein deklariertes Payload-Feld.").format(src_field))
@@ -631,10 +701,6 @@ class DeriveTaskHandler(BaseTaskHandler):
 					_("derive: source_field '{0}' muss ein Link auf {1} sein (laut Payload-Feld-Spec).").format(
 						src_field, source_doctype
 					)
-				)
-			if out_field not in by_name:
-				frappe.throw(
-					_("derive: store_in_payload_field '{0}' ist kein deklariertes Payload-Feld.").format(out_field)
 				)
 
 	def runtime_actions(self, context: TaskHandlerContext, doc: Document, task_row) -> list[dict]:

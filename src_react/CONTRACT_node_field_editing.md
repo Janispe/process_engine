@@ -55,22 +55,20 @@ onDeleteField(fieldname);   // kaskadiert: entfernt auch payload_input/output au
 onPatchField(fieldname, { fieldtype, options });
 ```
 
-### 2. Produzierenden Knoten: „Output deklarieren"
-User gibt **Feldname + Typ** am Output-Port an.
-```js
-// Feld existiert noch nicht -> Spec anlegen:
-onAddField({ fieldname, label, fieldtype, options });
-// und diesen Knoten als Producer markieren:
-onAddIO({ step_key, kind: "payload_output", target: fieldname });
-```
-Existiert das Feld **schon** (anderswo deklariert): nur das `onAddIO(payload_output)` —
-**kein** zweites `onAddField`. (Server erzwingt: genau **ein** Producer pro Feld.)
+### 2. Outputs: typ-getrieben (NICHT manuell)  ← finaler Stand
+Outputs werden **nicht** mehr am Knoten von Hand angelegt. Jeder Handler deklariert via
+`declared_outputs(config)`, was er produziert (Name+Typ); beim **Versions-Speichern** legt
+`prozess_version.py::_sync_declared_outputs` daraus automatisch an/aktualisiert/entfernt:
+- `payload_field_specs` (Name+Typ, **`auto_output=1`**),
+- die `payload_output`-I/O-Zeile.
 
-**Output entfernen:**
-```js
-onRemoveIO({ step_key, kind: "payload_output", target: fieldname });
-// optional: wenn das Feld danach von keinem Knoten mehr referenziert wird -> onDeleteField(fieldname)
-```
+Der Nutzer **konfiguriert nur die Aufgabe** im Inspector (z.B. create_linked_doc:
+`target_doctype` + `store_in_payload_field` als Freitext-Name) → der Output (z.B.
+Link→Mietvertrag) erscheint nach dem Speichern automatisch als Output-Port.
+
+Frontend-Konsequenz: **kein** „+ Output deklarieren"-Dialog mehr; Output-Ports sind
+read-only (löschen am Output unterdrücken — wird eh re-synct). Outputs erscheinen erst
+**nach dem Speichern** (Backend ist die Wahrheit).
 
 ### 3. Input-Port verdrahten (Konsument liest ein Feld)
 Nur Felder anbieten, die **schon deklariert** sind (Start-Input oder produziert).

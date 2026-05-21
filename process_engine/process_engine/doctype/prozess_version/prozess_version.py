@@ -57,6 +57,7 @@ class ProzessVersion(Document):
 		self._enforce_active_immutability()
 		self._validate_runtime_doctype()
 		self._normalize_rows()
+		self._sync_declared_outputs()
 		self._validate_active_uniqueness()
 		self._validate_schritt_io()
 
@@ -534,6 +535,89 @@ class ProzessVersion(Document):
 
 		if self.get("schritte"):
 			self.set("schritte", sorted(self.get("schritte"), key=lambda r: int(r.reihenfolge or 0)))
+
+	def _sync_declared_outputs(self) -> None:
+		"""Outputs sind typ-getrieben: jeder Schritt-Handler deklariert via declared_outputs(config),
+		welche Payload-Felder er produziert. Daraus werden payload_field_specs (Name+Typ,
+		auto_output=1) UND payload_output-I/O automatisch angelegt/aktualisiert; veraltete werden
+		entfernt. Der Nutzer deklariert nur Start-Inputs (manuell, auto_output=0).
+		"""
+		# Gesperrte (aktive/aktivierte) Versionen sind eingefroren — nicht anfassen; ihr
+		# Output-Stand wurde als Entwurf synchronisiert. Beim ERSTEN Insert (is_new) trotzdem
+		# syncen, falls eine Version direkt aktiv angelegt wird (z.B. Bootstrap).
+		if not self.is_new() and (self.get("is_active") or self.get("wurde_aktiviert")):
+			return
+		runtime_config = self._get_runtime_config()
+
+		# 1. Deklarierte Outputs je Schritt einsammeln.
+		declared_all: dict[str, dict] = {}
+		declared_by_step: dict[str, set[str]] = {}
+		for row in self.get("schritte") or []:
+			sk = (row.step_key or "").strip()
+			if not sk:
+				continue
+			handler = runtime_config.task_handler_registry.get_handler(
+				handler_key=(row.handler_key or "").strip(),
+				task_type=row.task_type,
+				context=runtime_config.task_handler_context,
+			)
+			names: set[str] = set()
+			for out in (handler.declared_outputs(extract_task_config(row)) or []):
+				fn = (out.get("fieldname") or "").strip()
+				if not fn:
+					continue
+				names.add(fn)
+				declared_all[fn] = out
+			declared_by_step[sk] = names
+
+		# 2. payload_output-I/O syncen: veraltete entfernen, fehlende anlegen.
+		existing_out: set[tuple[str, str]] = set()
+		kept_io = []
+		for r in (self.get("schritt_io") or []):
+			if (r.kind or "").strip() == "payload_output":
+				sk = (r.step_key or "").strip()
+				tgt = (r.target or "").strip()
+				if tgt not in declared_by_step.get(sk, set()):
+					continue  # veraltet
+				existing_out.add((sk, tgt))
+			kept_io.append(r)
+		self.set("schritt_io", kept_io)
+		for sk, names in declared_by_step.items():
+			for fn in names:
+				if (sk, fn) not in existing_out:
+					self.append("schritt_io", {"step_key": sk, "kind": "payload_output", "target": fn})
+
+		# 3. Output-Specs (auto_output=1) anlegen/aktualisieren — Handler ist die Wahrheit.
+		spec_by_name = {(s.fieldname or "").strip(): s for s in (self.get("payload_field_specs") or [])}
+		for fn, out in declared_all.items():
+			spec = spec_by_name.get(fn)
+			if spec is None:
+				spec = self.append("payload_field_specs", {"fieldname": fn, "label": fn})
+				spec_by_name[fn] = spec
+			spec.fieldtype = (out.get("fieldtype") or "Data").strip() or "Data"
+			spec.options = (out.get("options") or "").strip()
+			spec.auto_output = 1
+			if not (spec.label or "").strip():
+				spec.label = fn
+
+		# 4. Veraltete auto_output-Specs: entfernen, wenn nicht (mehr) konsumiert; sonst zu
+		#    Start-Input degradieren (auto_output=0), damit ein Konsument sie extern bekommt.
+		consumed = {
+			(r.target or "").strip()
+			for r in (self.get("schritt_io") or [])
+			if (r.kind or "").strip() == "payload_input"
+		}
+		kept_specs = []
+		for s in (self.get("payload_field_specs") or []):
+			fn = (s.fieldname or "").strip()
+			if int(s.get("auto_output") or 0) == 1 and fn not in declared_all:
+				if fn in consumed:
+					s.auto_output = 0
+					kept_specs.append(s)
+				# sonst: verwaistes Auto-Output -> droppen
+			else:
+				kept_specs.append(s)
+		self.set("payload_field_specs", kept_specs)
 
 	def _validate_active_uniqueness(self) -> None:
 		if not self.is_active:

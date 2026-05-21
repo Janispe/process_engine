@@ -126,6 +126,38 @@ def resolve_path(doctype: str, name: str, path: str):
 	return value
 
 
+_PAYLOAD_FIELDTYPES = {
+	"Data", "Link", "Date", "Datetime", "Int", "Float",
+	"Currency", "Check", "Select", "Small Text", "Long Text",
+}
+
+
+def path_terminal_type(doctype: str, path: str) -> tuple[str, str]:
+	"""Liefert (fieldtype, options) des End-Segments eines Pfads — fuer die Output-Typ-
+	Ableitung des derive-Knotens. Standardfelder/Unbekanntes/Exoten -> ("Data", "")."""
+	doctype = (doctype or "").strip()
+	path = (path or "").strip()
+	if not doctype or not path:
+		return ("Data", "")
+	segments = [s.strip() for s in path.split(".") if s.strip()]
+	cur = doctype
+	df = None
+	for i, seg in enumerate(segments):
+		df = frappe.get_meta(cur).get_field(seg)
+		is_last = i == len(segments) - 1
+		if df is None:
+			return ("Data", "")  # Standardfeld (z.B. name) -> als Data behandeln
+		if not is_last:
+			if df.fieldtype not in LINK_FIELDTYPES or not (df.options or "").strip():
+				return ("Data", "")
+			cur = df.options.strip()
+	if df is None:
+		return ("Data", "")
+	ft = df.fieldtype if df.fieldtype in _PAYLOAD_FIELDTYPES else "Data"
+	opts = (df.options or "").strip() if ft in LINK_FIELDTYPES else ""
+	return (ft, opts)
+
+
 @frappe.whitelist()
 def get_path_options(doctype: str, path_prefix: str = "") -> dict:
 	"""Liefert die waehlbaren Felder fuer den Pfad-Picker.
