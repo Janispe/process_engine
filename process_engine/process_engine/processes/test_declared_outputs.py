@@ -129,9 +129,11 @@ class TestSyncDeclaredOutputs(FrappeTestCase):
 				{"fieldname": "manuelles_flag", "label": "Flag", "fieldtype": "Check"},
 			],
 			"schritte": [{
-				"step_key": "py", "titel": "Py", "task_type": "python_action", "handler_key": "foo",
+				"step_key": "py", "titel": "Py", "task_type": "python_action", "handler_key": "test.set_flag",
 				"pflicht": 1, "sichtbar_fuer_prozess_typ": "Beide", "reihenfolge": 10,
+				"konfig_json": json.dumps({"target_field": "manuelles_flag"}),
 			}],
+			# set_flag-Validierung verlangt target_field als payload_output -> muss _sync ueberleben.
 			"schritt_io": [{"step_key": "py", "kind": "payload_output", "target": "manuelles_flag"}],
 		}).insert(ignore_permissions=True)
 		try:
