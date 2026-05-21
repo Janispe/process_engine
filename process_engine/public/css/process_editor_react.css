@@ -925,21 +925,24 @@ button { font-family: inherit; }
 /* ========== Add-step popover ========== */
 
 .popover-backdrop {
-  position: absolute;
+  /* Echtes Viewport-Overlay (fixed), nicht absolute innerhalb der Editor-Box. Sonst wird der
+     Dialog vom overflow:hidden der .workspace (~80vh) unten abgeschnitten — z.B. das
+     Feld-Mapping mit langer Tabelle inkl. Footer/Buttons. Kein transformierter Vorfahr ueber
+     dem Backdrop -> fixed bezieht sich auf den Viewport. z-index ueber der Frappe-Navbar. */
+  position: fixed;
   inset: 0;
-  z-index: 30;
+  z-index: 1050;
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 80px;
+  padding-top: 10vh;
   background: oklch(20% 0.01 60 / 0.18);
   backdrop-filter: blur(2px);
 }
 .popover {
   width: 460px;
-  /* Nie hoeher als die Editor-Box -> sonst wird der Dialog unten abgeschnitten.
-     Body scrollt bei Bedarf (siehe .popover .pb). */
-  max-height: calc(100% - 100px);
+  /* Nie hoeher als der Viewport -> Body scrollt bei Bedarf (siehe .popover .pb). */
+  max-height: calc(100vh - 20vh);
   display: flex;
   flex-direction: column;
   background: var(--surface);
