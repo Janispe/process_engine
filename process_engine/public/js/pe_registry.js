@@ -38,6 +38,12 @@
 				}
 				map[key] = fn;
 			},
+			// Map-kompatibler Alias: manche Consumer/Bundles erwarten ein Map-artiges
+			// Objekt (.set/.get). So funktioniert die Registry unabhaengig davon, ob ein
+			// Asset sie als Map oder als register()-Objekt anspricht (Ladereihenfolge-robust).
+			set(name, fn) {
+				return this.register(name, fn);
+			},
 			get(name) {
 				return map[(name || "").trim()] || null;
 			},

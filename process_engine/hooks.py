@@ -18,9 +18,18 @@ boot_session = "process_engine.process_engine.processes.triggers.add_to_boot"
 # Source-Doctypes (Mietvertrag, Wohnung, ...).
 # pe_registry.js MUSS zuerst laden: legt window.process_engine.{config_widgets,
 # action_dialogs, task_views} an, in die Doctype-JS und Consumer-Apps eintragen.
+# print_format_picker.js registriert ein Config-Widget und MUSS nach pe_registry.js laden.
+# Das React-Editor-Bundle wird NICHT global eingebunden, sondern lazy via frappe.require
+# in prozess_version.js (analog dag_mermaid.js).
 app_include_js = [
 	"/assets/process_engine/js/pe_registry.js",
 	"/assets/process_engine/js/process_triggers.js",
+	"/assets/process_engine/js/print_format_picker.js",
+]
+
+
+app_include_css = [
+	"/assets/process_engine/css/process_editor_react.css",
 ]
 
 

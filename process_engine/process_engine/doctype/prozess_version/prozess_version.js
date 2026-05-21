@@ -333,6 +333,150 @@ async function _render_visual_editor(frm) {
 	const field = frm.get_field("editor_html");
 	if (!field) return;
 	const is_locked = _is_version_locked(frm);
+
+	// React-Bundle + CSS lazy laden (analog dag_mermaid.js). Bundle wird via build.mjs
+	// aus src_react/ gebaut und nach public/js bzw. public/css gelegt.
+	await new Promise((r) =>
+		frappe.require("/assets/process_engine/js/process_editor_react.bundle.js", r)
+	);
+	await _loadCssOnce("/assets/process_engine/css/process_editor_react.css");
+
+	field.$wrapper.empty();
+	const container = document.createElement("div");
+	container.style.cssText =
+		"position: relative; height: 800px; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;";
+	field.$wrapper.append(container);
+
+	// Bridge: React mutiert nie direkt frm.doc — alle Aenderungen laufen ueber
+	// frappe.model (dirty + refresh), Config-Schema kommt vom Server, Custom-Widgets
+	// werden weiterhin ueber window.process_engine.config_widgets aufgeloest.
+	window.ProcessEditorReact.mount(container, {
+		schritte: frm.doc.schritte || [],
+		schritt_io: frm.doc.schritt_io || [],
+		payload_field_specs: frm.doc.payload_field_specs || [],
+		versionLabel: frm.doc.titel || frm.doc.name,
+		versionKey: frm.doc.version_key || "",
+		isActive: !!frm.doc.is_active,
+		prozess_typ: frm.doc.prozess_typ || "",
+		read_only: is_locked,
+		frm: frm,
+		onPatchStep(step_key, patch) {
+			const row = (frm.doc.schritte || []).find((r) => (r.step_key || "").trim() === step_key);
+			if (!row) return;
+			for (const [k, v] of Object.entries(patch)) {
+				frappe.model.set_value(row.doctype, row.name, k, v);
+			}
+		},
+		onAddStep(spec) {
+			const existing = new Set((frm.doc.schritte || []).map((r) => r.step_key));
+			if (existing.has(spec.step_key)) {
+				frappe.msgprint(__("Step Key bereits vergeben: {0}", [spec.step_key]));
+				return;
+			}
+			const row = frappe.model.add_child(frm.doc, "Prozess Schritt", "schritte");
+			Object.assign(row, spec);
+			frm.refresh_field("schritte");
+			frm.dirty();
+			_render_dag_preview(frm);
+			_render_visual_editor(frm);
+		},
+		onDeleteStep(step_key) {
+			// Nutzt die bestehende Cascade-Logik (Confirm + I/O-Aufraeumen + Re-Render).
+			_delete_step(frm, null, step_key);
+		},
+		onAddIO(spec) {
+			const exists = (frm.doc.schritt_io || []).some(
+				(r) => r.step_key === spec.step_key && r.kind === spec.kind && r.target === spec.target
+			);
+			if (exists) return;
+			const row = frappe.model.add_child(frm.doc, "Prozess Schritt IO", "schritt_io");
+			row.step_key = spec.step_key;
+			row.kind = spec.kind;
+			row.target = spec.target;
+			frm.refresh_field("schritt_io");
+			frm.dirty();
+			_render_dag_preview(frm);
+			_render_visual_editor(frm);
+		},
+		onRemoveIO(spec) {
+			frm.doc.schritt_io = (frm.doc.schritt_io || []).filter(
+				(r) => !(r.step_key === spec.step_key && r.kind === spec.kind && r.target === spec.target)
+			);
+			frm.refresh_field("schritt_io");
+			frm.dirty();
+			_render_dag_preview(frm);
+			_render_visual_editor(frm);
+		},
+		onPatchField(fieldname, patch) {
+			const row = (frm.doc.payload_field_specs || []).find(
+				(r) => (r.fieldname || "").trim() === fieldname
+			);
+			if (!row) return;
+			for (const [k, v] of Object.entries(patch)) {
+				frappe.model.set_value(row.doctype, row.name, k, v);
+			}
+		},
+		onDeleteField(fieldname) {
+			frm.doc.payload_field_specs = (frm.doc.payload_field_specs || []).filter(
+				(r) => (r.fieldname || "").trim() !== fieldname
+			);
+			frm.doc.schritt_io = (frm.doc.schritt_io || []).filter(
+				(r) => !((r.kind === "payload_input" || r.kind === "payload_output") && r.target === fieldname)
+			);
+			frm.refresh_field("payload_field_specs");
+			frm.refresh_field("schritt_io");
+			frm.dirty();
+			_render_dag_preview(frm);
+			_render_visual_editor(frm);
+		},
+		onAddField(spec) {
+			const existing = new Set((frm.doc.payload_field_specs || []).map((r) => r.fieldname));
+			if (existing.has(spec.fieldname)) {
+				frappe.msgprint(__("Feldname bereits vergeben: {0}", [spec.fieldname]));
+				return;
+			}
+			const row = frappe.model.add_child(frm.doc, "Prozess Field Spec", "payload_field_specs");
+			Object.assign(row, spec);
+			frm.refresh_field("payload_field_specs");
+			frm.dirty();
+			_render_visual_editor(frm);
+		},
+		async fetchMeta(doctype) {
+			await frappe.model.with_doctype(doctype);
+			return frappe.get_meta(doctype) || { fields: [] };
+		},
+		async fetchSchema(task_type, handler_key) {
+			const r = await frappe.call({
+				method: "process_engine.process_engine.doctype.prozess_version.prozess_version.get_task_config_schema",
+				args: { prozess_typ: frm.doc.prozess_typ, task_type, handler_key },
+			});
+			return r.message;
+		},
+		onToast(msg, kind) {
+			frappe.show_alert({ message: msg, indicator: kind === "err" ? "red" : "blue" }, 3);
+		},
+	});
+}
+
+// CSS einmalig lazy nachladen (analog frappe.require fuer JS-Assets).
+function _loadCssOnce(href) {
+	return new Promise((resolve) => {
+		if (document.querySelector(`link[href="${href}"]`)) return resolve();
+		const link = document.createElement("link");
+		link.rel = "stylesheet";
+		link.href = href;
+		link.onload = () => resolve();
+		link.onerror = () => resolve();
+		document.head.appendChild(link);
+	});
+}
+
+// Legacy: alter Drawflow-Editor. Nicht mehr verdrahtet (React-Editor oben ist aktiv),
+// bleibt als Fallback/Referenz erhalten — bei Bedarf in _render_visual_editor umbenennen.
+async function _render_visual_editor_drawflow_legacy(frm) {
+	const field = frm.get_field("editor_html");
+	if (!field) return;
+	const is_locked = _is_version_locked(frm);
 	const $wrapper = field.$wrapper;
 	const shell_class = is_locked ? "pe-editor-shell pe-readonly" : "pe-editor-shell";
 	// Toolbar als absolut positioniertes Overlay. Auf gesperrten Versionen bleibt nur

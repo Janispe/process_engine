@@ -344,9 +344,14 @@ class PrintDocumentTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_PRINT_DOCUMENT
 
 	def config_schema(self) -> dict | None:
+		# widget "print_format_picker" (Consumer-Asset) rendert ein Link-Control auf
+		# "Print Format" mit Preview-Link + Doc-Type-Pille. Ist das Asset nicht geladen,
+		# faellt der Editor sichtbar auf den Raw-JSON-Editor zurueck (Daten bleiben heil);
+		# fieldtype/options bleiben als Fallback-Metadaten erhalten.
 		return {
 			"fields": [
-				{"key": "print_format", "label": _("Print Format"), "fieldtype": "Link", "options": "Print Format", "reqd": 1},
+				{"key": "print_format", "label": _("Print Format"), "fieldtype": "Link",
+				 "options": "Print Format", "widget": "print_format_picker", "reqd": 1},
 			]
 		}
 
