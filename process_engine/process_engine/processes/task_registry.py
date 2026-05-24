@@ -637,15 +637,21 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 
 
 class DeriveTaskHandler(BaseTaskHandler):
-	"""Auto-Run-Node: leitet einen Wert aus einem Objekt (= Input des Knotens) ueber einen Pfad ab.
+	"""Auto-Run-Node: leitet aus EINEM Objekt (= Input des Knotens) ueber mehrere Pfade
+	mehrere Werte ab — ein Eingang, viele Ausgaenge.
 
 	Config (konfig_json):
 	  - input_doctype: Doctype des Quell-Objekts (in der Config gewaehlt)
-	  - path: Punkt-Pfad im input_doctype (z.B. "wohnung" oder "wohnung.immobilie"),
-	    virtuell-bewusst aufgeloest (siehe path_resolver).
-	  - store_in_payload_field: Payload-Feld fuer das Ergebnis
+	  - derivations: [{path, field}] — je Eintrag ein Punkt-Pfad im input_doctype
+	    (z.B. "wohnung" oder "wohnung.immobilie", virtuell-bewusst aufgeloest, siehe
+	    path_resolver) plus der Payload-Feldname fuer das Ergebnis. Der `field`-Name wird
+	    im Editor automatisch aus dem Pfad abgeleitet (letztes Segment, dedupliziert).
+	    Jeder Eintrag wird zu einem eigenen Output-Port.
 	  - source_field: Payload-Link-Feld = das konkrete Quell-Objekt. Wird NICHT im Dropdown
 	    gesetzt, sondern durch Verdrahten im Editor (Payload-Feld -> Objekt-Input-Port des Knotens).
+
+	Rueckwaerts-kompatibel: aeltere Configs mit `path` + `store_in_payload_field` (eine
+	einzelne Ableitung) werden weiterhin gelesen (siehe _derivations).
 
 	Laeuft automatisch (kein Mensch): die Engine fuehrt run_action aus, sobald das
 	source_field im Payload vorhanden ist (Auto-Run). `is_auto` markiert das fuer den
@@ -655,26 +661,92 @@ class DeriveTaskHandler(BaseTaskHandler):
 	task_type = TASK_TYPE_DERIVE
 	is_auto = True
 
+	# Feldnamen, die als Pfad-Endsegment zu generisch sind, um daraus allein einen
+	# Payload-Feldnamen zu bilden -> Eltern-Segment voranstellen (mieter.name -> mieter_name).
+	_WEAK_TERMINAL_SEGMENTS = frozenset({"name", "title", "value", "status", "label"})
+
 	def config_schema(self) -> dict | None:
 		# source_field wird nicht hier gewaehlt, sondern im Canvas verdrahtet (Objekt-Input-Port).
+		# derivations ist die Pfad-Liste; das Widget pflegt [{path, field}] + Auto-Name.
 		return {
 			"fields": [
 				{"key": "input_doctype", "label": _("Quell-Doctype"), "fieldtype": "Link", "options": "DocType", "reqd": 1},
-				{"key": "path", "label": _("Pfad"), "fieldtype": "Data", "widget": "path_picker", "reqd": 1},
-				{"key": "store_in_payload_field", "label": _("Ergebnis-Feld (Name)"), "fieldtype": "Data", "reqd": 1},
+				{"key": "derivations", "label": _("Abgeleitete Felder (Pfade)"), "fieldtype": "Data", "widget": "derive_paths", "reqd": 1},
 			]
 		}
+
+	@staticmethod
+	def _auto_field_name(path: str, taken: set[str]) -> str:
+		"""Leitet einen Payload-Feldnamen aus einem Pfad ab (letztes Segment, normalisiert),
+		dedupliziert gegen `taken` per numerischem Suffix. Generische End-Segmente (name/...)
+		bekommen das Eltern-Segment vorangestellt."""
+		import re
+
+		segs = [s.strip() for s in (path or "").split(".") if s.strip()]
+		base = segs[-1] if segs else "wert"
+		if base in DeriveTaskHandler._WEAK_TERMINAL_SEGMENTS and len(segs) >= 2:
+			base = f"{segs[-2]}_{base}"
+		base = re.sub(r"[^a-z0-9_]", "_", base.lower()).strip("_") or "wert"
+		cand = base
+		i = 2
+		while cand in taken:
+			cand = f"{base}_{i}"
+			i += 1
+		return cand
+
+	@classmethod
+	def _derivations(cls, config: dict) -> list[dict]:
+		"""Normalisiert die Ableitungen zu [{path, field}, ...].
+
+		Neues Schema: config['derivations'] = [{path, field}].
+		Alt (rueckwaerts-kompat): config['path'] + config['store_in_payload_field'] -> eine
+		einzelne Ableitung. Fehlende `field`-Namen werden aus dem Pfad abgeleitet (dedupliziert),
+		damit auch alte/teilbefuellte Configs stabil deklarierte Outputs liefern.
+		"""
+		raw = config.get("derivations")
+		if isinstance(raw, str):
+			try:
+				raw = json.loads(raw)
+			except (ValueError, TypeError):
+				raw = None
+
+		items: list[dict] = []
+		if isinstance(raw, list) and raw:
+			for d in raw:
+				if not isinstance(d, dict):
+					continue
+				path = (d.get("path") or "").strip()
+				if not path:
+					continue
+				items.append({"path": path, "field": (d.get("field") or "").strip()})
+		else:
+			# Alt-Schema: genau eine Ableitung aus path + store_in_payload_field.
+			path = (config.get("path") or "").strip()
+			if path:
+				items.append({"path": path, "field": (config.get("store_in_payload_field") or "").strip()})
+
+		taken: set[str] = {d["field"] for d in items if d["field"]}
+		for d in items:
+			if not d["field"]:
+				d["field"] = cls._auto_field_name(d["path"], taken)
+				taken.add(d["field"])
+		return items
 
 	def declared_outputs(self, config: dict) -> list[dict]:
 		from process_engine.process_engine.processes.path_resolver import path_terminal_type
 
-		field = (config.get("store_in_payload_field") or "").strip()
-		if not field:
-			return []
 		input_doctype = (config.get("input_doctype") or "").strip()
-		path = (config.get("path") or "").strip()
-		fieldtype, options = path_terminal_type(input_doctype, path) if (input_doctype and path) else ("Data", "")
-		return [{"fieldname": field, "fieldtype": fieldtype, "options": options}]
+		outputs: list[dict] = []
+		for d in self._derivations(config):
+			field = d["field"]
+			path = d["path"]
+			if not field:
+				continue
+			fieldtype, options = (
+				path_terminal_type(input_doctype, path) if (input_doctype and path) else ("Data", "")
+			)
+			outputs.append({"fieldname": field, "fieldtype": fieldtype, "options": options})
+		return outputs
 
 	def declared_inputs(self, config: dict) -> list[str]:
 		# Das verdrahtete Quell-Objekt -> als payload_input gefuehrt (wie fill_fields).
@@ -683,16 +755,28 @@ class DeriveTaskHandler(BaseTaskHandler):
 
 	def validate_config(self, step_or_task) -> None:
 		config = extract_task_config(step_or_task)
-		for key in ("input_doctype", "path", "store_in_payload_field"):
-			if not (config.get(key) or "").strip():
-				frappe.throw(_("derive erfordert '{0}' in der Konfig.").format(key))
+		input_doctype = (config.get("input_doctype") or "").strip()
+		if not input_doctype:
+			frappe.throw(_("derive erfordert 'input_doctype' in der Konfig."))
 
-		input_doctype = config["input_doctype"].strip()
-		# Pfad gegen Meta validieren -> kaputte Pfade fallen beim Speichern auf, nicht erst
-		# zur Laufzeit als geloggter Auto-Run-Fehler.
+		derivations = self._derivations(config)
+		if not derivations:
+			frappe.throw(_("derive erfordert mindestens einen Pfad (Ableitung) in der Konfig."))
+
+		# Jeden Pfad gegen Meta validieren -> kaputte Pfade fallen beim Speichern auf, nicht erst
+		# zur Laufzeit als geloggter Auto-Run-Fehler. Ergebnis-Feldnamen muessen je Knoten
+		# eindeutig sein (sonst zwei payload_output auf dasselbe Feld = Multi-Producer-Fehler).
 		from process_engine.process_engine.processes.path_resolver import validate_path
 
-		validate_path(input_doctype, config["path"].strip())
+		seen_fields: set[str] = set()
+		for d in derivations:
+			validate_path(input_doctype, d["path"])
+			field = d["field"]
+			if not field:
+				frappe.throw(_("derive: Ableitung fuer Pfad '{0}' hat keinen Ergebnis-Feldnamen.").format(d["path"]))
+			if field in seen_fields:
+				frappe.throw(_("derive: Ergebnis-Feld '{0}' ist mehrfach vergeben.").format(field))
+			seen_fields.add(field)
 
 		# Best-effort Cross-Check gegen die Versions-Feldspecs: prozess_version.py setzt sie als
 		# row.flags.version_payload_specs. Im Temporal-/Seed-Pfad (frappe._dict) fehlt das -> skip.
@@ -744,9 +828,8 @@ class DeriveTaskHandler(BaseTaskHandler):
 		config = extract_task_config(task_row)
 		source_field = (config.get("source_field") or "").strip()
 		input_doctype = (config.get("input_doctype") or "").strip()
-		path = (config.get("path") or "").strip()
-		out_field = (config.get("store_in_payload_field") or "").strip()
-		if not (source_field and input_doctype and path and out_field):
+		derivations = self._derivations(config)
+		if not (source_field and input_doctype and derivations):
 			frappe.throw(_("derive-Task ist nicht korrekt konfiguriert."))
 
 		if hasattr(doc, "payload") and callable(doc.payload):
@@ -758,22 +841,29 @@ class DeriveTaskHandler(BaseTaskHandler):
 			# Quelle (noch) nicht vorhanden -> nichts ableiten und den Schritt NICHT abschliessen,
 			# damit ein spaeter eintreffender Input noch verarbeitet wird (Defense-in-Depth zu
 			# can_auto_run, das diesen Fall im Auto-Run bereits abfaengt).
-			return {"field": out_field, "value": None, "skipped": True}
-		value = resolve_path(input_doctype, source_name, path)
-		if value is None or value == "":
-			# Quelle da, aber der (Zwischen-)Wert ist noch nicht aufloesbar — z.B.
-			# wohnung.aktueller_mietvertrag, bevor ein Vertrag existiert. NICHT abschliessen und
-			# keinen Output setzen, damit es bei einem spaeteren Save erneut laeuft. (0/False
-			# gelten bewusst als gueltige Ergebnisse und schliessen ab.)
-			return {"field": out_field, "value": value, "skipped": True}
+			return {"derived": {}, "skipped": True}
 
-		if hasattr(doc, "payload_set") and callable(doc.payload_set):
-			doc.payload_set(out_field, value)
-		else:
-			doc.set(out_field, value)
-		task_row.status = "Erledigt"
-		task_row.result_json = frappe.as_json({"derived": value, "field": out_field, "path": path})
-		return {"field": out_field, "value": value}
+		# Alle Pfade ableiten. Erst abschliessen, wenn JEDER Pfad einen Wert liefert — sonst
+		# wuerde ein spaeter eintreffender Zwischenwert (z.B. wohnung.aktueller_mietvertrag vor
+		# Vertragsanlage) nie mehr verarbeitet. Bereits aufloesbare Felder werden trotzdem schon
+		# gesetzt (idempotent). 0/False gelten bewusst als gueltige Ergebnisse.
+		results: dict = {}
+		all_resolved = True
+		for d in derivations:
+			value = resolve_path(input_doctype, source_name, d["path"])
+			if value is None or value == "":
+				all_resolved = False
+				continue
+			if hasattr(doc, "payload_set") and callable(doc.payload_set):
+				doc.payload_set(d["field"], value)
+			else:
+				doc.set(d["field"], value)
+			results[d["field"]] = value
+
+		if all_resolved:
+			task_row.status = "Erledigt"
+			task_row.result_json = frappe.as_json({"derived": results})
+		return {"derived": results, "skipped": not all_resolved}
 
 
 class FillFieldsTaskHandler(BaseTaskHandler):

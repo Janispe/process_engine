@@ -26,6 +26,7 @@ app_include_js = [
 	"/assets/process_engine/js/process_triggers.js",
 	"/assets/process_engine/js/print_format_picker.js",
 	"/assets/process_engine/js/path_picker.js",
+	"/assets/process_engine/js/derive_paths.js",
 	"/assets/process_engine/js/fill_fields_picker.js",
 ]
 

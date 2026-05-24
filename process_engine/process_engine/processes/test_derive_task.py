@@ -56,7 +56,8 @@ class TestDeriveTaskHandler(FrappeTestCase):
 			"store_in_payload_field": "out",
 		})
 		res = DeriveTaskHandler().run_action(None, doc, row)
-		self.assertEqual(res["value"], "Core")
+		self.assertEqual(res["derived"]["out"], "Core")
+		self.assertFalse(res.get("skipped"))
 		self.assertEqual(doc.payload("out"), "Core")
 		self.assertEqual(row.status, "Erledigt")
 		self.assertIn("derived", json.loads(row.result_json))
@@ -119,7 +120,8 @@ class TestDeriveTaskHandler(FrappeTestCase):
 			"store_in_payload_field": "out",
 		})
 		res = DeriveTaskHandler().run_action(None, doc, row)
-		self.assertIsNone(res["value"])
+		self.assertTrue(res.get("skipped"))
+		self.assertEqual(res["derived"], {})
 		self.assertIsNone(doc.payload("out"))
 
 	def test_validate_config_requires_input_doctype(self):
@@ -185,6 +187,126 @@ class TestDeriveTaskHandler(FrappeTestCase):
 		)
 		# Wirft nicht: src ist Link->DocType, out deklariert.
 		DeriveTaskHandler().validate_config(row)
+
+
+class TestDeriveMultiPath(FrappeTestCase):
+	"""Neues Schema: ein Objekt-Eingang -> mehrere Pfade -> mehrere Ausgaenge (derivations)."""
+
+	def test_auto_field_name_from_path(self):
+		auto = DeriveTaskHandler._auto_field_name
+		self.assertEqual(auto("wohnung", set()), "wohnung")
+		self.assertEqual(auto("wohnung.immobilie", set()), "immobilie")
+		# generisches End-Segment -> Eltern-Segment voranstellen
+		self.assertEqual(auto("mieter.name", set()), "mieter_name")
+		# Dedupe per numerischem Suffix
+		self.assertEqual(auto("a.immobilie", {"immobilie"}), "immobilie_2")
+		self.assertEqual(auto("a.immobilie", {"immobilie", "immobilie_2"}), "immobilie_3")
+
+	def test_derivations_backcompat_single_path(self):
+		# Alt-Schema (path + store_in_payload_field) -> genau eine Ableitung.
+		items = DeriveTaskHandler._derivations(
+			{"path": "module", "store_in_payload_field": "out"}
+		)
+		self.assertEqual(items, [{"path": "module", "field": "out"}])
+
+	def test_derivations_backcompat_autonames_missing_field(self):
+		# Alt-Schema ohne store_in_payload_field -> Feldname aus Pfad abgeleitet.
+		items = DeriveTaskHandler._derivations({"path": "wohnung.immobilie"})
+		self.assertEqual(items, [{"path": "wohnung.immobilie", "field": "immobilie"}])
+
+	def test_derivations_new_schema(self):
+		items = DeriveTaskHandler._derivations(
+			{"derivations": [{"path": "module", "field": "modul"}, {"path": "name", "field": "dt_name"}]}
+		)
+		self.assertEqual(items, [{"path": "module", "field": "modul"}, {"path": "name", "field": "dt_name"}])
+
+	def test_declared_outputs_multiple(self):
+		# Zwei Pfade -> zwei Output-Specs, Typ je aus dem Pfad-Endsegment.
+		outs = DeriveTaskHandler().declared_outputs(
+			{
+				"input_doctype": "DocType",
+				"derivations": [
+					{"path": "module", "field": "modul"},  # Link->Module Def
+					{"path": "name", "field": "dt_name"},  # Standardfeld -> Data
+				],
+			}
+		)
+		self.assertEqual(
+			outs,
+			[
+				{"fieldname": "modul", "fieldtype": "Link", "options": "Module Def"},
+				{"fieldname": "dt_name", "fieldtype": "Data", "options": ""},
+			],
+		)
+
+	def test_run_action_multiple_paths(self):
+		doc = _FakeDoc({"src": "User"})
+		row = _FakeRow({
+			"source_field": "src",
+			"input_doctype": "DocType",
+			"derivations": [
+				{"path": "module", "field": "modul"},
+				{"path": "name", "field": "dt_name"},
+			],
+		})
+		res = DeriveTaskHandler().run_action(None, doc, row)
+		self.assertFalse(res.get("skipped"))
+		self.assertEqual(doc.payload("modul"), "Core")
+		self.assertEqual(doc.payload("dt_name"), "User")
+		self.assertEqual(row.status, "Erledigt")
+
+	def test_run_action_partial_resolution_does_not_complete(self):
+		# Ein Pfad aufloesbar, einer (noch) None -> aufgeloesten Wert setzen, aber NICHT abschliessen.
+		doc = _FakeDoc({"src": "User"})
+		row = _FakeRow({
+			"source_field": "src",
+			"input_doctype": "DocType",
+			"derivations": [
+				{"path": "module", "field": "modul"},
+				{"path": "lazy", "field": "lazy"},
+			],
+		})
+
+		def fake_resolve(_dt, _name, path):
+			return {"module": "Core", "lazy": None}[path]
+
+		with patch(
+			"process_engine.process_engine.processes.path_resolver.resolve_path",
+			side_effect=fake_resolve,
+		):
+			res = DeriveTaskHandler().run_action(None, doc, row)
+		self.assertTrue(res.get("skipped"))
+		self.assertEqual(doc.payload("modul"), "Core")  # bereits gesetzt (idempotent)
+		self.assertIsNone(doc.payload("lazy"))
+		self.assertEqual(row.status, "Offen")  # nicht abgeschlossen
+
+	def test_validate_config_new_schema_ok(self):
+		row = _FakeRow({
+			"source_field": "src",
+			"input_doctype": "DocType",
+			"derivations": [
+				{"path": "module", "field": "modul"},
+				{"path": "name", "field": "dt_name"},
+			],
+		})
+		DeriveTaskHandler().validate_config(row)  # wirft nicht
+
+	def test_validate_config_requires_at_least_one_derivation(self):
+		row = _FakeRow({"source_field": "src", "input_doctype": "DocType", "derivations": []})
+		with self.assertRaises(frappe.ValidationError):
+			DeriveTaskHandler().validate_config(row)
+
+	def test_validate_config_rejects_duplicate_output_field(self):
+		row = _FakeRow({
+			"source_field": "src",
+			"input_doctype": "DocType",
+			"derivations": [
+				{"path": "module", "field": "dup"},
+				{"path": "name", "field": "dup"},
+			],
+		})
+		with self.assertRaises(frappe.ValidationError):
+			DeriveTaskHandler().validate_config(row)
 
 
 class TestDeriveAutoRunIntegration(FrappeTestCase):
