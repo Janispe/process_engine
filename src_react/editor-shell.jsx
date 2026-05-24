@@ -1063,8 +1063,15 @@ export function App({
   // ===== Sync I/O for create_linked_doc mapping save =====
   function syncMappingIO(stepKey, nextCfg) {
     const out = (nextCfg.store_in_payload_field || "").trim();
+    // Manuell ausgefuellte Dialog-Felder sind KEIN Input -> ihr (evtl. Alt-)Prefill darf keine
+    // payload_input-Zeile erzeugen. Nur echte Mapping-Quellen zaehlen.
+    const dialogNames = new Set(
+      (Array.isArray(nextCfg.dialog_fields) ? nextCfg.dialog_fields : [])
+        .map((f) => (f && f.fieldname) || "")
+    );
     const ins = new Set();
-    for (const v of Object.values(nextCfg.prefill_mapping || {})) {
+    for (const [t, v] of Object.entries(nextCfg.prefill_mapping || {})) {
+      if (dialogNames.has(t)) continue;
       const m = String(v).match(PAYLOAD_RE);
       if (m) ins.add(m[1]);
     }

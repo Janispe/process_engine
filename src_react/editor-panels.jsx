@@ -714,8 +714,10 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
     const orig = (cfg.prefill_mapping && typeof cfg.prefill_mapping === "object") ? cfg.prefill_mapping : {};
     for (const r of rows) {
       if (r.src === "manual") {
+        // Manuell = reine User-Eingabe zur Laufzeit -> KEIN Payload-Prefill und damit KEIN
+        // Input. Ein evtl. altes {{ payload.X }} (z.B. nach Umschalten von "Aus Input")
+        // wird bewusst verworfen, sonst gilt das Feld faelschlich weiter als payload_input.
         dialog_fields.push(r.originalDef);
-        if (r.fieldname in orig) prefill_mapping[r.fieldname] = orig[r.fieldname];
       } else if (r.src === "input") {
         // "Aus Input" -> Input-Port am Knoten; Quelle wird per Drag belegt (nicht hier).
         // Bestehende Belegung ({{ payload.X }}) erhalten.

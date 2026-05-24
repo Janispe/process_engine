@@ -35,8 +35,15 @@ export function getMapInputs(step) {
   try { cfg = JSON.parse(step.konfig_json || "{}") || {}; } catch (_) { cfg = {}; }
   const prefill = (cfg.prefill_mapping && typeof cfg.prefill_mapping === "object") ? cfg.prefill_mapping : {};
   const targets = Array.isArray(cfg.map_inputs) ? cfg.map_inputs.slice() : [];
+  // Manuell ausgefuellte Dialog-Felder sind KEIN Input (User-Eingabe zur Laufzeit) — auch
+  // wenn sie aus Altdaten noch ein {{ payload.X }}-Default tragen. Aus der Inferenz ausnehmen.
+  const dialogNames = new Set(
+    (Array.isArray(cfg.dialog_fields) ? cfg.dialog_fields : [])
+      .map((f) => (f && f.fieldname) || "")
+  );
   // Backward-compat: bestehende {{ payload.X }}-Mappings ohne map_inputs trotzdem als Input zeigen.
   for (const [t, v] of Object.entries(prefill)) {
+    if (dialogNames.has(t)) continue;
     if (PAYLOAD_TPL_RE.test(String(v)) && !targets.includes(t)) targets.push(t);
   }
   return targets.map((t) => {
