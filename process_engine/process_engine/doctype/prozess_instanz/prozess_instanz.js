@@ -158,9 +158,15 @@ async function _pe_render_instance_view(frm) {
 				return null;
 			}
 
-			const userValues = _pe_user_values(row.task_type, data);
-			const payloadJson = userValues ? JSON.stringify({ user_values: userValues }) : null;
 			try {
+				// file_upload: Datei an die Instanz anhaengen + URL ins payload_output-Feld
+				// schreiben, BEVOR der Schritt erledigt wird (das Widget liefert ein File-Objekt).
+				if (row.task_type === "file_upload" && data && data.file instanceof File) {
+					await _pe_handle_file_upload(frm, version, stepKey, data.file);
+				}
+
+				const userValues = _pe_user_values(row.task_type, data);
+				const payloadJson = userValues ? JSON.stringify({ user_values: userValues }) : null;
 				await frappe.call({
 					method: PE_RUN_ACTION,
 					args: { docname: frm.doc.name, row_name: row.name, action_key: desc.key, payload_json: payloadJson },
@@ -171,6 +177,13 @@ async function _pe_render_instance_view(frm) {
 					message: (err && err.message) || __("Aktion fehlgeschlagen."),
 					indicator: "red",
 				});
+				// Optimistischen Shell-Zustand verwerfen -> echten Server-State re-mounten,
+				// sonst zeigt die UI faelschlich "erledigt" obwohl der Call fehlschlug.
+				try {
+					await frm.reload_doc();
+				} catch (e) {
+					/* noop */
+				}
 			}
 			return null;
 		},
@@ -204,6 +217,70 @@ function _pe_task_unlocked(frm, row) {
 		const p = byStep[(d || "").trim()];
 		return !p || p.erfuellt;
 	});
+}
+
+// ---- file_upload: Datei anhaengen + Payload-Feld setzen ------------------------
+
+async function _pe_handle_file_upload(frm, version, stepKey, file) {
+	const step = (version.schritte || []).find((s) => s.step_key === stepKey);
+	let cfg = {};
+	try {
+		cfg = JSON.parse((step && step.konfig_json) || "{}") || {};
+	} catch (e) {
+		cfg = {};
+	}
+	if (cfg.max_size_mb && file.size > cfg.max_size_mb * 1024 * 1024) {
+		throw new Error(__("Datei zu groß (max {0} MB).", [cfg.max_size_mb]));
+	}
+
+	const uploaded = await _pe_upload_file(file, frm.doc.name);
+	const fileUrl = uploaded && (uploaded.file_url || uploaded.file_name);
+	if (!fileUrl) throw new Error(__("Upload lieferte keine Datei-URL."));
+
+	// URL ins payload_output-Feld des Schritts schreiben (= das Feld, das dieser Schritt
+	// produziert). Direkt via set_value -> Server-Save, ohne mitten im Flow neu zu mounten.
+	const outRow = (version.schritt_io || []).find(
+		(r) => r.step_key === stepKey && r.kind === "payload_output"
+	);
+	if (outRow && outRow.target) {
+		let pj = {};
+		try {
+			pj = JSON.parse(frm.doc.payload_json || "{}") || {};
+		} catch (e) {
+			pj = {};
+		}
+		pj[outRow.target] = fileUrl;
+		await frappe.db.set_value("Prozess Instanz", frm.doc.name, "payload_json", JSON.stringify(pj));
+	}
+	return fileUrl;
+}
+
+// Laedt ein File-Objekt via Frappes upload_file-Endpoint hoch und haengt es an die
+// Prozess Instanz an (erscheint in den Anhaengen). FormData -> kein frappe.call.
+async function _pe_upload_file(file, docname) {
+	const fd = new FormData();
+	fd.append("file", file, file.name);
+	fd.append("is_private", "1");
+	fd.append("folder", "Home");
+	fd.append("doctype", "Prozess Instanz");
+	fd.append("docname", docname);
+	const res = await fetch("/api/method/upload_file", {
+		method: "POST",
+		headers: { "X-Frappe-CSRF-Token": frappe.csrf_token },
+		body: fd,
+	});
+	if (!res.ok) {
+		let msg = "HTTP " + res.status;
+		try {
+			const j = await res.json();
+			msg = (j._server_messages && JSON.parse(j._server_messages).join(" ")) || j.message || msg;
+		} catch (e) {
+			/* keep msg */
+		}
+		throw new Error(__("Upload fehlgeschlagen: {0}", [msg]));
+	}
+	const json = await res.json();
+	return json.message;
 }
 
 // ---- Widget-Daten -> run_task_action user_values -------------------------------
