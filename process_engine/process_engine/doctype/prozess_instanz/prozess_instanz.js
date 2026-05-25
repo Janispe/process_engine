@@ -19,6 +19,8 @@ var PE_RUN_ACTION =
 	"process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.run_task_action";
 var PE_GET_ACTIONS =
 	"process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_task_runtime_actions";
+var PE_ACTIVE_VERSION =
+	"process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_active_version";
 
 // Legacy-HTML-Felder + Roh-Tabellen, die der Viewer ersetzt -> ausblenden.
 var PE_HIDDEN_FIELDS = [
@@ -35,22 +37,58 @@ frappe.ui.form.on("Prozess Instanz", {
 	async refresh(frm) {
 		for (const f of PE_HIDDEN_FIELDS) frm.set_df_property(f, "hidden", 1);
 		_pe_add_raw_json_toggle(frm);
-		if (frm.is_new() || !frm.doc.prozess_version) {
+
+		if (frm.is_new()) {
+			// Neuer Prozess: aktive Version des Typs sofort vorbelegen (sichtbar vor Save).
+			if (frm.doc.prozess_typ && !frm.doc.prozess_version) await _pe_set_active_version(frm);
 			const field = frm.get_field("progress_html");
 			if (field) {
 				field.$wrapper.html(
-					`<p class="text-muted">${__("Noch keine Prozess Version zugeordnet.")}</p>`
+					frm.doc.prozess_version
+						? `<p class="text-muted">${__("Aktive Version {0} — der Prozess startet beim Speichern.", [
+								frappe.utils.escape_html(frm.doc.prozess_version),
+						  ])}</p>`
+						: `<p class="text-muted">${__("Bitte einen Prozess-Typ wählen.")}</p>`
 				);
+			}
+			return;
+		}
+
+		if (!frm.doc.prozess_version) {
+			const field = frm.get_field("progress_html");
+			if (field) {
+				field.$wrapper.html(`<p class="text-muted">${__("Noch keine Prozess Version zugeordnet.")}</p>`);
 			}
 			return;
 		}
 		await _pe_render_instance_view(frm);
 	},
 
+	async prozess_typ(frm) {
+		// Typ gewaehlt/geaendert -> aktive Version neu aufloesen (nur im Neu-Formular;
+		// gespeicherte Instanzen sind an ihre Version gebunden).
+		if (frm.is_new() && frm.doc.prozess_typ) await _pe_set_active_version(frm);
+	},
+
 	prozess_version(frm) {
 		if (!frm.is_new() && frm.doc.prozess_version) _pe_render_instance_view(frm);
 	},
 });
+
+// Aktive Version des gewaehlten Typs ermitteln und vorbelegen (= Auflösung wie bei
+// Instanziierung). Bei keiner aktiven Version wird das Feld geleert; der Server wirft
+// dann erst beim Speichern eine aussagekraeftige Meldung.
+async function _pe_set_active_version(frm) {
+	try {
+		const r = await frappe.call({ method: PE_ACTIVE_VERSION, args: { prozess_typ: frm.doc.prozess_typ } });
+		const v = (r && r.message) || {};
+		if ((frm.doc.prozess_version || "") !== (v.name || "")) {
+			await frm.set_value("prozess_version", v.name || "");
+		}
+	} catch (e) {
+		/* Server löst beim Speichern auf */
+	}
+}
 
 async function _pe_render_instance_view(frm) {
 	const field = frm.get_field("progress_html");

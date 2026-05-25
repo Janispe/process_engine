@@ -59,6 +59,28 @@ def get_seed_tasks_preview(prozess_typ: str | None = None) -> dict:
 
 
 @frappe.whitelist()
+def get_active_version(prozess_typ: str | None = None) -> dict:
+	"""Aktive Prozess Version eines Typs — fuer die Vorbelegung von prozess_version im
+	Neu-Formular, damit sie sofort sichtbar ist. Nutzt dieselbe Auflösung wie die
+	Instanziierung (engine._get_active_process_version: is_active + prozess_typ +
+	Gueltigkeitszeitraum). Leeres Dict, wenn kein Typ/keine aktive Version."""
+	from process_engine.process_engine.processes.engine import get_runtime_config_for_typ
+
+	if not prozess_typ:
+		return {}
+	cfg = get_runtime_config_for_typ(prozess_typ)
+	if not cfg:
+		return {}
+	version = ProcessEngine(cfg)._get_active_process_version(prozess_typ)
+	if not version or not version.get("name"):
+		return {}
+	return {
+		"name": version.get("name"),
+		"label": (version.get("version_key") or version.get("titel") or "").strip(),
+	}
+
+
+@frappe.whitelist()
 def dispatch_workflow_action(
 	docname: str, action: str, payload_json: str | None = None, timeout_seconds: int = 5
 ) -> dict:
