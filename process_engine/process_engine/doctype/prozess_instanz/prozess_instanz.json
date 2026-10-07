@@ -9,6 +9,7 @@
   "section_typ",
   "prozess_typ",
   "label_cached",
+  "bezeichnung",
   "column_typ",
   "status",
   "orchestrator_backend",
@@ -46,6 +47,7 @@
   {"fieldname": "section_typ", "fieldtype": "Section Break", "label": "Prozess-Typ"},
   {"fieldname": "prozess_typ", "fieldtype": "Link", "options": "Prozess Typ", "label": "Prozess-Typ", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1},
   {"fetch_from": "prozess_typ.label", "fieldname": "label_cached", "fieldtype": "Data", "label": "Label", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "bezeichnung", "fieldtype": "Data", "label": "Bezeichnung", "read_only": 1, "allow_on_submit": 1, "in_list_view": 1, "description": "Prozesstyp, Quelle oder Wohnung und eindeutige Prozessnummer."},
   {"fieldname": "column_typ", "fieldtype": "Column Break"},
   {"default": "Entwurf", "fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Entwurf\nIn Bearbeitung\nAbschlusspruefung\nAbgeschlossen\nAbgeschlossen (Bypass)", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1},
   {"default": "local", "fieldname": "orchestrator_backend", "fieldtype": "Select", "label": "Backend", "options": "local\ntemporal", "reqd": 1},
@@ -99,10 +101,10 @@
   {"create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1, "submit": 1, "cancel": 1, "amend": 1},
   {"create": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "Hausverwalter", "share": 1, "write": 1, "submit": 1, "amend": 1}
  ],
- "search_fields": "label_cached,prozess_typ,quelle_name",
+ "search_fields": "bezeichnung,prozess_typ,quelle_name",
  "show_title_field_in_link": 1,
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "label_cached"
+ "title_field": "bezeichnung"
 }

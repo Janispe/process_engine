@@ -6,6 +6,7 @@ import frappe
 from frappe import _
 
 from process_engine.process_engine.processes import BaseProcessDocument, ProcessEngine
+from process_engine.process_engine.processes.instance_titles import build_instance_title
 
 
 class ProzessInstanz(BaseProcessDocument):
@@ -13,6 +14,15 @@ class ProzessInstanz(BaseProcessDocument):
 
 	Die Runtime-Config wird nicht aus _PROCESS_RUNTIMES, sondern aus dem
 	prozess_typ-Doc geladen (siehe engine.py:get_runtime_config_for_typ)."""
+
+	def before_save(self) -> None:
+		self.bezeichnung = build_instance_title(self)
+
+	def before_submit(self) -> None:
+		self.bezeichnung = build_instance_title(self)
+
+	def before_update_after_submit(self) -> None:
+		self.bezeichnung = build_instance_title(self)
 
 	def payload(self, key: str, default=None):
 		"""Convenience-Accessor fuer payload_json-Felder. In Print-Formaten verwendbar
