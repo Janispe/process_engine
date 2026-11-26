@@ -210,10 +210,25 @@ def _claim(engine, doc, row):
 	return True
 
 
+def _expired_without_retry(engine, row):
+	if row.ausfuehrungsstatus != RUNNING or not _due(row.ausfuehrung_ablauf):
+		return False
+	if (row.ausfuehrung_versuche or 0) < MAX_ATTEMPTS:
+		return False
+	# The last external attempt may have succeeded before the worker died.
+	# Permit one final reconciliation, fenced by the existing recovery flag.
+	return row.ausfuehrung_ungeklaert or not engine._get_task_handler(row).external_automatic_effect
+
+
 def execute(doctype, name, row_name):
 	try:
 		engine, doc, row = _load(doctype, name, row_name, lock=True)
 	except frappe.DoesNotExistError:
+		return
+	if _active(doc) and enabled(engine, doc, row) and _expired_without_retry(engine, row):
+		_set_failure(engine, doc, row, _("Der Worker hat die Ausführung nicht abgeschlossen."),
+			uncertain=engine._get_task_handler(row).external_automatic_effect)
+		frappe.db.commit()
 		return
 	if not _claim(engine, doc, row):
 		frappe.db.rollback()
@@ -262,8 +277,12 @@ def _record_failure(doctype, name, row_name, token, error, external_effect_compl
 		frappe.db.rollback()
 		return
 	uncertain = isinstance(error, UncertainEffect) or bool(row.ausfuehrung_ungeklaert) or external_effect_completed
+	_set_failure(engine, doc, row, str(error)[:1000] or type(error).__name__, uncertain=uncertain)
+	frappe.db.commit()
+
+
+def _set_failure(engine, doc, row, message, *, uncertain):
 	attempts = row.ausfuehrung_versuche or 0
-	message = str(error)[:1000] or type(error).__name__
 	# Inconclusive results can retry reconciliation within the same attempt budget.
 	next_attempt = add_to_date(now_datetime(), minutes=5 * 2 ** (attempts - 1)) if attempts < MAX_ATTEMPTS else None
 	_update(
@@ -274,7 +293,6 @@ def _record_failure(doctype, name, row_name, token, error, external_effect_compl
 	)
 	if next_attempt is None:
 		_notify(engine, doc, row)
-	frappe.db.commit()
 
 
 def _notify(engine, doc, row):

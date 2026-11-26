@@ -278,6 +278,25 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 		with self.assertRaisesRegex(frappe.ValidationError, "visibility_when"):
 			self.typ.save()
 
+	def test_expired_final_reconciliation_stops_at_attempt_limit(self):
+		instance = self.make_instance()
+		frappe.db.commit()
+		row = self.task()
+		frappe.db.set_value(row.doctype, row.name, {
+			"ausfuehrungsstatus": automatic.RUNNING,
+			"ausfuehrung_ungeklaert": 1,
+			"ausfuehrung_ablauf": add_to_date(now_datetime(), minutes=-1),
+			"ausfuehrung_versuche": automatic.MAX_ATTEMPTS,
+		})
+		frappe.db.commit()
+		with patch.object(PaperlessExportTaskHandler, "_request_export") as export:
+			automatic.execute(instance.doctype, instance.name, row.name)
+			export.assert_not_called()
+		row = self.task()
+		self.assertEqual(row.ausfuehrungsstatus, automatic.FAILED)
+		self.assertFalse(row.ausfuehrung_faellig)
+		self.assertTrue(row.ausfuehrung_ungeklaert)
+
 	def test_database_trigger_checks_source_and_mapped_payload(self):
 		key = self.typ.name
 		self.typ.append("triggers", {
