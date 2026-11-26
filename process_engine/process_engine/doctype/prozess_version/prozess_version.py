@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import frappe
+
+from process_engine.process_engine.processes.conditions import validate_row
+from process_engine.process_engine.processes.linked_create import validate_opt_in
 from frappe import _
 from frappe.model.document import Document
 
-from process_engine.process_engine.processes.engine import get_process_runtime_config
+from process_engine.process_engine.processes.engine import get_process_runtime_config, get_runtime_config_for_typ
 from process_engine.process_engine.processes.task_registry import (
 	TASK_TYPE_MANUAL_CHECK,
 	dump_task_config,
@@ -80,6 +83,8 @@ class ProzessVersion(Document):
 
 	def _enforce_active_immutability(self) -> None:
 		if self.is_new():
+			if self.is_active:
+				self.wurde_aktiviert = 1
 			return
 		# Migration-Patches (z.B. move_payload_specs_to_version) muessen
 		# Specs nachtraeglich auf aktive Versionen kopieren koennen.
@@ -97,7 +102,7 @@ class ProzessVersion(Document):
 		# Monotonie erzwingen: wurde_aktiviert darf nie 1 -> 0 zurueck. Das Feld ist nur
 		# UI-readonly; ein API-/Script-Save koennte es sonst (ohne Content-Diff) auf 0
 		# setzen und eine ehemals aktive Version wieder editierbar machen. Re-asserten.
-		if was_ever_active and not self.wurde_aktiviert:
+		if (was_ever_active or was_active) and not self.wurde_aktiviert:
 			self.wurde_aktiviert = 1
 		diffs = self._compute_content_diffs(before)
 
@@ -207,6 +212,7 @@ class ProzessVersion(Document):
 					(s.get("task_type") or "").strip(),
 					(s.get("handler_key") or "").strip(),
 					int(s.get("pflicht") or 0),
+					int(s.get("automatisch") or 0),
 					(s.get("sichtbar_fuer_prozess_typ") or "").strip(),
 					(s.get("dokument_typ_tag") or "").strip(),
 					(s.get("print_format") or "").strip(),
@@ -448,14 +454,15 @@ class ProzessVersion(Document):
 		runtime_doctype = (self.runtime_doctype or "").strip()
 		if not runtime_doctype:
 			frappe.throw(_("Runtime Doctype ist erforderlich."))
-		_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
-		if not get_process_runtime_config(runtime_doctype):
-			frappe.throw(_("Kein Process Runtime fuer Doctype registriert: {0}").format(runtime_doctype))
+		self._get_runtime_config()
 
 	def _get_runtime_config(self):
 		runtime_doctype = (self.runtime_doctype or "").strip()
-		_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
-		config = get_process_runtime_config(runtime_doctype)
+		if runtime_doctype == "Prozess Instanz" and any(step.automatisch for step in self.get("schritte") or []):
+			config = get_runtime_config_for_typ(self.prozess_typ)
+		else:
+			_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
+			config = get_process_runtime_config(runtime_doctype)
 		if not config:
 			frappe.throw(_("Kein Process Runtime fuer Doctype registriert: {0}").format(runtime_doctype))
 		return config
@@ -492,7 +499,15 @@ class ProzessVersion(Document):
 			# source_field ein Link-Spec mit passendem Ziel-Doctype ist). Best-effort: Handler,
 			# die es nicht brauchen, ignorieren das Flag.
 			row.flags.version_payload_specs = self.get("payload_field_specs") or []
+			validate_row(row, "sichtbar_wenn", "freigabe_wenn")
 			handler.validate_config(row)
+			if row.automatisch:
+				from process_engine.process_engine.processes.automatic import validate_step
+
+				validate_step(row, handler)
+				if self.runtime_doctype != "Prozess Instanz":
+					frappe.throw(_("Automatische Schritte benötigen die Runtime Prozess Instanz."))
+			validate_opt_in(row, extract_task_config(row), complete=bool(self.is_active))
 
 		# Edge-Validierung (DAG-Kanten in schritt_kanten)
 		seen_edges: set[tuple[str, str]] = set()
@@ -720,8 +735,10 @@ def get_activation_preview(name: str) -> dict:
 
 @frappe.whitelist()
 def activate_version(name: str) -> str:
-	doc = frappe.get_doc("Prozess Version", name)
+	doc = frappe.get_doc("Prozess Version", name, for_update=True)
 	doc.check_permission("write")
+	for step in doc.schritte:
+		validate_opt_in(step, extract_task_config(step), complete=True)
 	filters = _active_version_scope_filters(doc)
 	filters["name"] = ("!=", doc.name)
 	others = frappe.get_all(

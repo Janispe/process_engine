@@ -5,6 +5,8 @@ import json
 from typing import Callable, Any
 
 import frappe
+
+from . import automatic, conditions
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import add_days, get_datetime, getdate, now_datetime, today
@@ -26,7 +28,9 @@ from process_engine.process_engine.integrations.temporal.orchestrator import (
 	dispatch_action_and_wait,
 	ensure_workflow_started,
 )
+from process_engine.process_engine.processes import linked_create
 from process_engine.process_engine.processes.task_registry import (
+	CreateLinkedDocTaskHandler,
 	TASK_TYPE_CREATE_LINKED_DOC,
 	TASK_TYPE_MANUAL_CHECK,
 	TASK_TYPE_PAPERLESS_EXPORT,
@@ -77,6 +81,7 @@ class ProcessTrigger:
 	# "path" -> path_resolver.resolve_path(source_doctype, source_name, path) (virtuell-bewusst);
 	# "fixed" -> value; "manual"/"none" -> Feld bleibt leer (User fuellt es im neuen Formular).
 	input_mapping: dict | None = None
+	visibility_condition: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,7 @@ def get_runtime_config_for_typ(prozess_typ_name: str) -> ProcessRuntimeConfig | 
 			button_group=(t.button_group or "Workflow").strip() or "Workflow",
 			payload_builder=_make_jinja_payload_builder(t.payload_template or ""),
 			input_mapping=_parse_trigger_input_mapping(t.get("input_mapping_json")),
+			visibility_condition=conditions.parse(t.get("visibility_when")),
 		)
 		for t in (typ.triggers or [])
 	)
@@ -367,6 +373,7 @@ class ProcessEngine:
 		self._validate_orchestrator_backend_lock(doc)
 		self._ensure_process_type_default(doc)
 		self._validate_version_lock(doc)
+		automatic.prepare(self, doc)
 		for fn in self.config.validators:
 			fn(doc)
 		self._sync_tasks_with_todos(doc)
@@ -383,11 +390,21 @@ class ProcessEngine:
 
 	def after_insert(self, doc: Document) -> None:
 		self._ensure_task_detail_rows(doc)
+		rows = linked_create.opted_rows(doc)
+		self.sync_linked_create_assignments(doc, rows)
+		# Assignments link back to the instance, so on insert they are created only
+		# after the parent and its child rows exist.
+		for row in rows:
+			if row.todo:
+				frappe.db.set_value(row.doctype, row.name, "todo", row.todo, update_modified=False)
 		if self.is_temporal_backend(doc):
 			ensure_workflow_started(doc, actor=frappe.session.user)
 
 	def on_update(self, doc: Document) -> None:
 		self._ensure_todos_if_started(doc)
+		automatic.enqueue_ready(self, doc)
+		if doc.flags.automatic_execution:
+			return
 		if (doc.get(self.config.status_fieldname) or "").strip() in {
 			STATUS_ABSCHLUSSPRUEFUNG,
 			STATUS_ABGESCHLOSSEN,
@@ -436,6 +453,7 @@ class ProcessEngine:
 	def dispatch_workflow_action(self, docname: str, action: str, payload_json: str | None = None, timeout_seconds: int = 5) -> dict:
 		doc = frappe.get_doc(self.config.doctype, docname)
 		doc.check_permission("write")
+		action = (action or "").strip()
 		payload = {}
 		if payload_json:
 			try:
@@ -446,6 +464,10 @@ class ProcessEngine:
 				payload = {}
 
 		if self.is_temporal_backend(doc):
+			if action == ACTION_SET_TASK_STATUS:
+				row = self.get_task_row(doc, payload.get("row_name") or payload.get("aufgabe_row_name"))
+				if linked_create.opted_config(doc, row):
+					linked_create.unavailable()
 			return dispatch_action_and_wait(
 				doctype=doc.doctype,
 				docname=doc.name,
@@ -455,7 +477,14 @@ class ProcessEngine:
 				timeout_seconds=timeout_seconds,
 			)
 
-		res = self.dispatch_local(doc, (action or "").strip(), payload, actor=frappe.session.user)
+		try:
+			res = self.dispatch_local(doc, action, payload, actor=frappe.session.user)
+		except frappe.QueryDeadlockError:
+			if action != ACTION_CREATE_LINKED_DOC:
+				raise
+			raise linked_create.LinkedCreateConflict(
+				_("Die Erstellaufgabe wurde gleichzeitig geändert. Bitte neu laden.")
+			) from None
 		if not res.get("ok"):
 			frappe.throw(res.get("message") or _("Workflow-Aktion fehlgeschlagen."))
 		doc.reload()
@@ -493,6 +522,10 @@ class ProcessEngine:
 				payload_json=json.dumps({"row_name": row_name}, ensure_ascii=True),
 			)
 		row = self.get_task_row(doc, row_name)
+		if automatic.enabled(self, doc, row):
+			frappe.throw(_("Diese Aufgabe wird automatisch ausgeführt."))
+		if self._has_release_condition(doc, row) or not self._task_visible(doc, row):
+			self._require_task_unlocked(doc, row, ACTION_EXPORT_FILE_TASK)
 		if normalize_task_type(getattr(row, "task_type", None)) != TASK_TYPE_PAPERLESS_EXPORT:
 			frappe.throw(_("Diese Aufgabe ist kein paperless_export Typ."))
 		try:
@@ -553,7 +586,9 @@ class ProcessEngine:
 	def trigger_paperless_export_for_files(self, doc: Document) -> dict:
 		result = {}
 		for row in doc.get(self.config.task_fieldname) or []:
-			if not row.pflicht:
+			if not row.pflicht or automatic.enabled(self, doc, row) or not self._task_visible(doc, row):
+				continue
+			if self._has_release_condition(doc, row) and not self._is_task_unlocked(doc, row):
 				continue
 			if normalize_task_type(getattr(row, "task_type", None)) != TASK_TYPE_PAPERLESS_EXPORT:
 				continue
@@ -590,14 +625,24 @@ class ProcessEngine:
 		return {"ok": False, "status": doc.status, "docstatus": int(doc.docstatus or 0), "message": f"Unbekannte Aktion: {a}"}
 
 	def _run_task_action(self, doc: Document, action: str, payload: dict[str, Any]) -> dict:
+		if action == ACTION_CREATE_LINKED_DOC and doc.doctype == linked_create.INSTANCE:
+			return self._create_linked(doc.name, payload)
+
 		doc.flags.from_temporal_activity = True
 		row = self.get_task_row(doc, payload.get("row_name") or payload.get("aufgabe_row_name"))
 		handler = self._get_task_handler(row)
+		is_automatic = automatic.enabled(self, doc, row)
+		if is_automatic and action != ACTION_SET_TASK_STATUS:
+			frappe.throw(_("Diese Aufgabe wird automatisch ausgeführt."))
 		res: dict[str, Any] = {}
 		if action == ACTION_SET_TASK_STATUS:
+			if linked_create.opted_config(doc, row):
+				linked_create.unavailable()
 			target_status = (payload.get("status") or "Offen").strip()
 			if target_status not in {"Offen", "In Arbeit", "Erledigt"}:
 				frappe.throw(f"Ungueltiger Aufgabenstatus: {target_status}")
+			if is_automatic and target_status == TODO_STATUS_ERLEDIGT:
+				frappe.throw(_("Nur eine erfolgreiche automatische Ausführung schließt diese Aufgabe ab."))
 			if target_status == TODO_STATUS_ERLEDIGT and not self._is_task_unlocked(doc, row):
 				frappe.throw(_("Aufgabe ist noch nicht freigegeben."))
 			row.status = target_status
@@ -642,6 +687,34 @@ class ProcessEngine:
 		else:
 			frappe.throw(f"Unbekannte Task-Aktion: {action}")
 		return res
+
+	def _create_linked(self, docname, payload):
+		doc = frappe.get_doc(linked_create.INSTANCE, docname, for_update=True)
+		doc.check_permission("write")
+		engine = self.for_instance(doc)
+		row = engine.get_task_row(doc, payload.get("row_name") or payload.get("aufgabe_row_name"))
+		handler = engine._get_task_handler(row)
+		if row.task_type != TASK_TYPE_CREATE_LINKED_DOC or automatic.enabled(engine, doc, row):
+			linked_create.unavailable()
+		values = payload.get("user_values", {})
+		if linked_create.opted_config(doc, row):
+			with linked_create.request_transaction():
+				return engine._execute_linked_create(linked_create.resolve(doc, row), values)
+		engine._require_task_unlocked(doc, row, ACTION_CREATE_LINKED_DOC)
+		doc.flags.from_temporal_activity = True
+		return handler.create_linked_doc(engine.config.task_handler_context, doc, row, user_values=values or {})
+
+	def _execute_linked_create(self, task, values, *, proposal_context=None):
+		"""Execute a checked task under the instance lock held by the caller."""
+		task.doc.check_permission("read")
+		task.doc.check_permission("write")
+		handler = self._get_task_handler(task.row)
+		if type(handler) is not CreateLinkedDocTaskHandler:
+			linked_create.unavailable()
+		if proposal_context is not None and (task.doc.orchestrator_backend != BACKEND_LOCAL or proposal_context != task.context):
+			linked_create.unavailable()
+		effective = task.effective_values(values, proposal=proposal_context is not None, permission="write")
+		return handler.create_checked(task, effective)
 
 	def _persist_status_action(self, doc: Document, *, target_status: str, action: str, payload: dict[str, Any], actor: str) -> None:
 		doc.flags.from_temporal_activity = True
@@ -718,7 +791,9 @@ class ProcessEngine:
 		Schuetzt alle side-effect Task-Actions (export/generate/confirm/run/create_linked)
 		vor Aufrufen via API/Temporal/stale UI vor offenen DAG-Vorgaengern. Status-
 		Umschalter haben ihren eigenen Guard im set_task_status-Branch."""
-		if row.pflicht and not self._is_task_unlocked(doc, row):
+		if not self._task_visible(doc, row) or (
+			(row.pflicht or self._has_release_condition(doc, row)) and not self._is_task_unlocked(doc, row)
+		):
 			frappe.throw(_("Aufgabe ist noch nicht freigegeben (Aktion '{0}').").format(action))
 
 	def _task_filled_payload_fields(self, doc: Document) -> set[str]:
@@ -771,7 +846,14 @@ class ProcessEngine:
 			frappe.throw(_("Prozess-Typ darf bei bestehenden Prozessdokumenten nicht geaendert werden."))
 
 	def _sync_tasks_with_todos(self, doc: Document) -> None:
+		engine_owned = {row.name for row in linked_create.opted_rows(doc)}
 		for row in doc.get(self.config.task_fieldname) or []:
+			if row.name in engine_owned or not self._task_visible(doc, row):
+				continue
+			if automatic.enabled(self, doc, row):
+				if not doc.is_new():
+					self._sync_todo_from_row(doc, row)
+				continue
 			todo_name = (row.todo or "").strip()
 			if todo_name:
 				todo_status = frappe.db.get_value("ToDo", todo_name, "status")
@@ -781,11 +863,30 @@ class ProcessEngine:
 					row.status = TODO_STATUS_OFFEN
 			self._sync_todo_from_row(doc, row)
 
+	def sync_linked_create_assignments(self, doc: Document, rows) -> None:
+		"""Synchronize the assignment identified by each verified Engine row."""
+		for row in rows:
+			todo = None
+			if row.todo and frappe.db.get_value("ToDo", row.todo, "name", for_update=True):
+				todo = frappe.get_doc("ToDo", row.todo, for_update=True)
+				if (todo.reference_type, todo.reference_name) != (doc.doctype, doc.name):
+					linked_create.unavailable()
+			if row.verantwortlich:
+				self._write_task_assignment(doc, row, todo)
+			else:
+				if todo and todo.status == "Open":
+					todo.status = "Cancelled"
+					todo.save(ignore_permissions=True)
+				row.todo = None
+
 	def _sync_todo_from_row(self, doc: Document, row) -> None:
 		if not doc.name or not row.verantwortlich:
 			return
 		todo_name = (row.todo or "").strip()
-		todo_doc = frappe.get_doc("ToDo", todo_name) if todo_name and frappe.db.exists("ToDo", todo_name) else None
+		todo = frappe.get_doc("ToDo", todo_name) if todo_name and frappe.db.exists("ToDo", todo_name) else None
+		self._write_task_assignment(doc, row, todo)
+
+	def _write_task_assignment(self, doc, row, todo_doc) -> None:
 		if not todo_doc:
 			todo_doc = frappe.get_doc(
 				{
@@ -823,8 +924,9 @@ class ProcessEngine:
 		if current_status != STATUS_IN_BEARBEITUNG and before_status != "":
 			return
 		if current_status == STATUS_IN_BEARBEITUNG and before_status != STATUS_IN_BEARBEITUNG:
+			engine_owned = {row.name for row in linked_create.opted_rows(doc)}
 			for row in doc.get(self.config.task_fieldname) or []:
-				if row.verantwortlich:
+				if row.verantwortlich and row.name not in engine_owned:
 					self._sync_todo_from_row(doc, row)
 
 	def _validate_bypass_fields(self, doc: Document) -> None:
@@ -861,6 +963,8 @@ class ProcessEngine:
 		if doc.is_new() and not frappe.db.exists(doc.doctype, doc.name):
 			return
 		for row in doc.get(self.config.task_fieldname) or []:
+			if automatic.enabled(self, doc, row):
+				continue
 			handler = self._get_task_handler(row)
 			res = handler.is_fulfilled(self.config.task_handler_context, doc, row)
 			fulfilled = bool(res.fulfilled)
@@ -888,15 +992,16 @@ class ProcessEngine:
 		# Gleiche Guard wie _sync_task_fulfillment_state: vor dem ersten DB-Insert ist die
 		# Live-Config einer Aufgabe (extract_task_config ueber die Prozess Version) nicht
 		# aufloesbar.
-		if doc.is_new() and not frappe.db.exists(doc.doctype, doc.name):
-			return
 		rows = doc.get(self.config.task_fieldname) or []
+		initial = doc.is_new() and not frappe.db.exists(doc.doctype, doc.name)
+		if initial and not any(automatic.enabled(self, doc, row) for row in rows):
+			return
 		progressed, guard = True, 0
 		while progressed and guard < 50:
 			progressed, guard = False, guard + 1
 			for row in rows:
 				handler = self._get_task_handler(row)
-				if not getattr(handler, "is_auto", False):
+				if not getattr(handler, "is_auto", False) or automatic.enabled(self, doc, row):
 					continue
 				if (row.status or "").strip() == TODO_STATUS_ERLEDIGT:
 					continue
@@ -905,9 +1010,13 @@ class ProcessEngine:
 				# Nicht nur "freigegeben" (DAG), sondern auch "Inputs wirklich da": ein derive
 				# darf erst laufen, wenn seine Quelle im Payload steht — sonst wuerde es mit
 				# leerem Input vorzeitig abschliessen und spaeter eintreffende Werte ignorieren.
-				if not handler.can_auto_run(self.config.task_handler_context, doc, row):
-					continue
+				if initial:
+					step = self.step_definition(doc, row)
+					if step:
+						row.flags.initial_task_config = extract_task_config(step)
 				try:
+					if not handler.can_auto_run(self.config.task_handler_context, doc, row):
+						continue
 					handler.run_action(self.config.task_handler_context, doc, row, {})
 				except Exception:
 					frappe.log_error(
@@ -915,6 +1024,9 @@ class ProcessEngine:
 						message=frappe.get_traceback(),
 					)
 					continue
+				finally:
+					if initial:
+						row.flags.pop("initial_task_config", None)
 				# run_action setzt row.status=Erledigt + payload_set; erfuellt-Flag fuer die
 				# Unlock-Kette des naechsten Auto-Schritts nachziehen.
 				row.erfuellt = 1
@@ -939,10 +1051,14 @@ class ProcessEngine:
 		if not rows:
 			blockers.append(_("Keine Aufgaben konfiguriert. Bitte Prozessversion pruefen."))
 		for row in rows:
+			if not self._task_visible(doc, row):
+				continue
 			if row.pflicht and (row.status or "").strip() != TODO_STATUS_ERLEDIGT:
 				blockers.append(_("Pflichtaufgabe offen: {0}").format(row.aufgabe))
-			res = self._get_task_handler(row).is_fulfilled(self.config.task_handler_context, doc, row)
-			if row.pflicht and not res.fulfilled:
+			fulfilled = row.erfuellt if automatic.enabled(self, doc, row) else (
+				self._get_task_handler(row).is_fulfilled(self.config.task_handler_context, doc, row).fulfilled
+			)
+			if row.pflicht and not fulfilled:
 				blockers.append(_("Pflichtaufgabe fachlich nicht erfuellt: {0}").format(row.aufgabe))
 			if row.pflicht and not self._is_task_unlocked(doc, row):
 				blockers.append(_("Pflichtaufgabe noch nicht freigegeben: {0}").format(row.aufgabe))
@@ -982,7 +1098,33 @@ class ProcessEngine:
 				blockers.append(_("Pflichtfeld fehlt im Payload: {0}").format(s.label or fn))
 		return blockers
 
+	def step_definition(self, doc, row):
+		version_name = doc.get(self.config.process_version_fieldname)
+		if not version_name or not getattr(row, "step_key", None):
+			return None
+		try:
+			version = frappe.get_cached_doc(self.config.process_version_doctype, version_name)
+		except frappe.DoesNotExistError:
+			return None
+		return next((step for step in version.get("schritte") or [] if step.step_key == row.step_key), None)
+
+	def _task_condition(self, doc, row, field):
+		step = self.step_definition(doc, row)
+		raw = step.get(field) if step else None
+		if not raw:
+			return True
+		return conditions.matches(conditions.parse(raw), conditions.document_values(doc), conditions.process_payload(doc))
+
+	def _has_release_condition(self, doc, row):
+		step = self.step_definition(doc, row)
+		return bool(step and conditions.parse(step.get("freigabe_wenn"))[1])
+
+	def _task_visible(self, doc, row):
+		return self._task_condition(doc, row, "sichtbar_wenn")
+
 	def _is_task_unlocked(self, doc: Document, row) -> bool:
+		if not self._task_visible(doc, row) or not self._task_condition(doc, row, "freigabe_wenn"):
+			return False
 		rows = doc.get(self.config.task_fieldname) or []
 		by_key = {(getattr(r, "step_key", None) or "").strip(): r for r in rows if (getattr(r, "step_key", None) or "").strip()}
 		target = (getattr(row, "step_key", None) or "").strip()
@@ -1020,7 +1162,7 @@ class ProcessEngine:
 				parent_row = by_key.get(d_stripped)
 				if parent_row is None:
 					continue
-				if not bool(getattr(parent_row, "erfuellt", 0)):
+				if self._task_visible(doc, parent_row) and not bool(getattr(parent_row, "erfuellt", 0)):
 					return False
 				stack.append(d_stripped)
 		return True

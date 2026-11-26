@@ -1,0 +1,64 @@
+{
+ "doctype": "DocType",
+ "name": "Prozess E-Mail Entwurf",
+ "module": "Process Engine",
+ "engine": "InnoDB",
+ "autoname": "hash",
+ "field_order": [
+  "ausfuehrung_key",
+  "prozess_instanz",
+  "recipient",
+  "subject",
+  "body"
+ ],
+ "fields": [
+  {
+   "fieldname": "ausfuehrung_key",
+   "fieldtype": "Data",
+   "label": "Ausführungsschlüssel",
+   "reqd": 1,
+   "hidden": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "prozess_instanz",
+   "fieldtype": "Link",
+   "label": "Prozess Instanz",
+   "options": "Prozess Instanz",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "recipient",
+   "fieldtype": "Data",
+   "label": "An",
+   "reqd": 1
+  },
+  {
+   "fieldname": "subject",
+   "fieldtype": "Data",
+   "label": "Betreff",
+   "reqd": 1
+  },
+  {
+   "fieldname": "body",
+   "fieldtype": "Long Text",
+   "label": "Nachricht",
+   "reqd": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1
+  },
+  {
+   "role": "Hausverwalter",
+   "if_owner": 1,
+   "read": 1,
+   "write": 1
+  }
+ ],
+ "title_field": "subject"
+}

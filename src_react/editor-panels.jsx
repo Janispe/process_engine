@@ -676,6 +676,7 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
         src,
         payload: cur.payload || "",
         literal: cur.literal != null ? String(cur.literal) : "",
+        proposable: (cfg.proposal_fields || []).includes(df.fieldname),
         originalDef: dialogByFn[df.fieldname] || {
           fieldname: df.fieldname,
           fieldtype: df.fieldtype || "Data",
@@ -711,6 +712,7 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
     const dialog_fields = [];
     const prefill_mapping = {};
     const map_inputs = [];
+    const proposal_fields = [];
     const orig = (cfg.prefill_mapping && typeof cfg.prefill_mapping === "object") ? cfg.prefill_mapping : {};
     for (const r of rows) {
       if (r.src === "manual") {
@@ -718,6 +720,7 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
         // Input. Ein evtl. altes {{ payload.X }} (z.B. nach Umschalten von "Aus Input")
         // wird bewusst verworfen, sonst gilt das Feld faelschlich weiter als payload_input.
         dialog_fields.push(r.originalDef);
+        if (r.proposable) proposal_fields.push(r.fieldname);
       } else if (r.src === "input") {
         // "Aus Input" -> Input-Port am Knoten; Quelle wird per Drag belegt (nicht hier).
         // Bestehende Belegung ({{ payload.X }}) erhalten.
@@ -727,7 +730,7 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
         prefill_mapping[r.fieldname] = r.literal;
       }
     }
-    onSave({ ...cfg, dialog_fields, prefill_mapping, map_inputs });
+    onSave({ ...cfg, dialog_fields, prefill_mapping, map_inputs, proposal_fields });
   };
 
   return (
@@ -773,7 +776,12 @@ export function DocFieldMappingDialog({ open, cfg, payloadFields, fetchMeta, onC
                       <input className="mapping-val" type="text" value={r.literal} onChange={(e) => setRow(idx, { literal: e.target.value })} placeholder="Literal-Wert" />
                     )}
                     {r.src === "manual" && (
-                      <span className="muted" style={{ fontSize: 12 }}>User-Eingabe zur Laufzeit</span>
+                      cfg.allow_ai_proposals ? (
+                        <label style={{ fontSize: 12 }}>
+                          <input type="checkbox" checked={r.proposable} onChange={(e) => setRow(idx, { proposable: e.target.checked })} />
+                          {" "}KI darf dieses Feld vorschlagen
+                        </label>
+                      ) : <span className="muted" style={{ fontSize: 12 }}>User-Eingabe zur Laufzeit</span>
                     )}
                     {r.src === "" && <span className="muted">—</span>}
                   </td>

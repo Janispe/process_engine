@@ -248,6 +248,20 @@ function Inspector({
         </div>
 
         <div className="insp-section">
+          {["paperless_export", "email_draft", "create_linked_doc", "python_action"].includes(step.task_type) && (
+            <label>
+              <input type="checkbox" checked={!!step.automatisch} disabled={readOnly}
+                     onChange={(e) => onPatchStep({ automatisch: Number(e.target.checked) })} />
+              Automatisch
+            </label>
+          )}
+          {[["sichtbar_wenn", "Sichtbar wenn"], ["freigabe_wenn", "Freigabe wenn"]].map(([field, label]) => (
+            <div className="insp-field" key={field}>
+              <label htmlFor={field}>{label} (JSON)</label>
+              <textarea id={field} className="mono" rows={3} value={step[field] || ""} disabled={readOnly}
+                        onChange={(e) => onPatchStep({ [field]: e.target.value })} />
+            </div>
+          ))}
           <KonfigEditor
             step={step}
             fieldSpecs={fieldSpecs}

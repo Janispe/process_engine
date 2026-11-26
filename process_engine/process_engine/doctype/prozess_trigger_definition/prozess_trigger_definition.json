@@ -66,10 +66,10 @@
    "label": "Input-Mapping bearbeiten"
   },
   {
-   "description": "Optional: JSONLogic-Expression, wann der Button sichtbar sein soll. Leer = immer sichtbar.",
+   "description": "Optionale JSON-Bedingung mit all oder any über doc- und payload-Felder. Leer = immer sichtbar.",
    "fieldname": "visibility_when",
    "fieldtype": "Code",
-   "label": "Sichtbar wenn (JSONLogic)",
+   "label": "Sichtbar wenn (JSON)",
    "options": "JSON"
   }
  ],

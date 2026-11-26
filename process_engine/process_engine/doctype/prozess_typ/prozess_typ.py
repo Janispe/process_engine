@@ -5,6 +5,9 @@ from frappe import _
 from frappe.model.document import Document
 
 
+from process_engine.process_engine.processes.conditions import validate_row
+
+
 class ProzessTyp(Document):
 	def validate(self) -> None:
 		self._validate_trigger_uniqueness()
@@ -13,6 +16,7 @@ class ProzessTyp(Document):
 	def _validate_trigger_uniqueness(self) -> None:
 		seen: set[tuple[str, str]] = set()
 		for t in self.get("triggers") or []:
+			validate_row(t, "visibility_when")
 			key = (t.source_doctype or "").strip()
 			tkey = (t.key or "").strip()
 			if not key or not tkey:
