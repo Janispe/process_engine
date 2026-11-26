@@ -52,7 +52,8 @@ Altbedingungen auf und stoppt, bis diese korrigiert sind.
 
 Mit **Automatisch** führt der lokale Hintergrund-Worker freigegebene Schritte
 nach dem Speichern aus. Für `paperless_export` muss eine Datei in der Aufgabe
-liegen oder `file_url_field` auf ihre URL im Payload zeigen. `email_draft`
+liegen oder `file_url_field` auf ihre URL im Payload zeigen. Protokolle der Hausverwaltung-Wohnungsabnahme
+verwenden ihren vorhandenen manuellen Archivpfad. `email_draft`
 verwendet `recipient_field`, `subject` und `body` und speichert einen
 verknüpften **Prozess E-Mail Entwurf**. `create_linked_doc` verwendet feste und
 zugeordnete Eingabefelder des geprüften Erstellpfads. Temporal und KI-Vorschläge
@@ -65,7 +66,9 @@ Aufgabenergebnis enthalten. Der Worker speichert diese am aktuellen Stand der
 Instanz. Handler führen keine eigenen Datenbank-Commits aus. Handler mit externer
 Wirkung setzen `external_automatic_effect`, verwenden den Ausführungsschlüssel
 zur Wiedererkennung und melden unklare Ergebnisse über `UncertainEffect`.
-Bei `reconcile=True` gleichen sie den früheren Versuch ab.
+Bei `reconcile=True` gleichen sie den früheren Versuch ab. Eine belegte
+Fehlverarbeitung melden sie mit `ConfirmedEffectFailure` als sicher
+fehlgeschlagen.
 
 Die Aufgabe zeigt den separaten Ausführungsstatus, Zeitpunkt und Fehlertext.
 Der Aufräumjob prüft alle fünf Minuten wartende Aufgaben, versäumte Jobs und

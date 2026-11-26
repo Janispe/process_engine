@@ -32,11 +32,16 @@ FIELDS = (
 	"ausfuehrungsstatus", "ausfuehrungsfehler", "ausfuehrung_am", "ausfuehrung_faellig",
 	"ausfuehrung_ablauf", "ausfuehrung_versuche", "ausfuehrung_generation", "ausfuehrung_key",
 	"ausfuehrung_actor", "ausfuehrung_ungeklaert", "ausfuehrung_token", "ausfuehrung_input",
+	"ausfuehrung_effect_key",
 )
 
 
 class UncertainEffect(Exception):
 	"""The effect may have happened. Future attempts may only reconcile it."""
+
+
+class ConfirmedEffectFailure(Exception):
+	"""Reconciliation confirmed that the attempt produced no external effect."""
 
 
 def validate_step(step, handler):
@@ -206,6 +211,7 @@ def _claim(engine, doc, row):
 		ausfuehrung_faellig=None, ausfuehrung_key=row.ausfuehrung_key or _execution_key(doc, row),
 		ausfuehrung_versuche=(row.ausfuehrung_versuche or 0) + 1,
 		ausfuehrung_ungeklaert=int(recover), ausfuehrung_token=uuid4().hex, ausfuehrung_input=input_value,
+		ausfuehrung_effect_key=row.ausfuehrung_effect_key if recover else uuid4().hex,
 	)
 	return True
 
@@ -276,7 +282,10 @@ def _record_failure(doctype, name, row_name, token, error, external_effect_compl
 	if row.ausfuehrungsstatus != RUNNING or row.ausfuehrung_token != token:
 		frappe.db.rollback()
 		return
-	uncertain = isinstance(error, UncertainEffect) or bool(row.ausfuehrung_ungeklaert) or external_effect_completed
+	uncertain = external_effect_completed or (
+		not isinstance(error, ConfirmedEffectFailure)
+		and (isinstance(error, UncertainEffect) or bool(row.ausfuehrung_ungeklaert))
+	)
 	_set_failure(engine, doc, row, str(error)[:1000] or type(error).__name__, uncertain=uncertain)
 	frappe.db.commit()
 
@@ -317,7 +326,7 @@ def retry(doctype, name, row_name):
 	if row.ausfuehrungsstatus == DONE and row.status != DONE:
 		_update(
 			row, ausfuehrungsstatus=WAITING, ausfuehrung_generation=(row.ausfuehrung_generation or 0) + 1,
-			ausfuehrung_key=None, ausfuehrung_input=None, ausfuehrung_versuche=0,
+			ausfuehrung_key=None, ausfuehrung_input=None, ausfuehrung_effect_key=None, ausfuehrung_versuche=0,
 			ausfuehrung_actor=frappe.session.user, ausfuehrung_am=now_datetime(),
 		)
 	elif row.ausfuehrungsstatus == FAILED:

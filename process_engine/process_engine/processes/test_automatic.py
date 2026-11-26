@@ -290,6 +290,32 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 		with self.assertRaisesRegex(frappe.ValidationError, "visibility_when"):
 			self.typ.save()
 
+	def test_confirmed_remote_failure_allows_new_upload_attempt_with_same_execution_key(self):
+		instance = self.make_instance()
+		frappe.db.commit()
+		with patch.object(PaperlessExportTaskHandler, "_request_export", side_effect=[
+			automatic.UncertainEffect("Unklar"),
+			automatic.ConfirmedEffectFailure("Abgebrochen"),
+			{"link": "https://paperless.example/documents/4"},
+		]) as export:
+			self.run_export()
+			first = self.task()
+			self.assertTrue(first.ausfuehrung_ungeklaert)
+			automatic.retry(instance.doctype, instance.name, first.name)
+			frappe.db.commit()
+			self.run_export()
+			second = self.task()
+			self.assertFalse(second.ausfuehrung_ungeklaert)
+			automatic.retry(instance.doctype, instance.name, second.name)
+			frappe.db.commit()
+			self.run_export()
+			self.assertEqual(self.task().ausfuehrungsstatus, automatic.DONE)
+			calls = [call.kwargs for call in export.call_args_list]
+		self.assertEqual({call["execution_key"] for call in calls}, {first.ausfuehrung_key})
+		self.assertEqual(calls[0]["attempt_key"], calls[1]["attempt_key"])
+		self.assertNotEqual(calls[1]["attempt_key"], calls[2]["attempt_key"])
+		self.assertEqual([call["reconcile_only"] for call in calls], [False, True, False])
+
 	def test_expired_final_reconciliation_stops_at_attempt_limit(self):
 		instance = self.make_instance()
 		frappe.db.commit()

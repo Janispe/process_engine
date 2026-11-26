@@ -396,7 +396,7 @@ class PaperlessExportTaskHandler(BaseTaskHandler):
 
 	def execute_automatic(self, context, doc, row, execution_key, reconcile):
 		return self._request_export(context, doc, row, row.ausfuehrung_input,
-			execution_key=execution_key, reconcile_only=reconcile)
+			execution_key=execution_key, attempt_key=row.ausfuehrung_effect_key, reconcile_only=reconcile)
 
 	def persist_automatic(self, context, doc, row, result):
 		detail = ensure_file_detail(context, doc.name, row.name)

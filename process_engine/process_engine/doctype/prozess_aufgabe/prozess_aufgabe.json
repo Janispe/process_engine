@@ -28,6 +28,7 @@
   "ausfuehrung_ungeklaert",
   "ausfuehrung_token",
   "ausfuehrung_input",
+  "ausfuehrung_effect_key",
   "pflicht",
   "erfuellt",
   "erfuellt_am",
@@ -37,6 +38,13 @@
   "todo"
  ],
  "fields": [
+  {
+   "fieldname": "ausfuehrung_effect_key",
+   "fieldtype": "Data",
+   "label": "Kennung des Ausführungsversuchs",
+   "read_only": 1,
+   "hidden": 1
+  },
   {
    "fieldname": "ausfuehrungsstatus",
    "fieldtype": "Select",
