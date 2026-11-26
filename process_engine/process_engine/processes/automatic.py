@@ -10,6 +10,9 @@ from frappe.utils import add_to_date, get_datetime, now_datetime
 
 from . import linked_create
 from .task_registry import (
+	CreateLinkedDocTaskHandler,
+	EmailDraftTaskHandler,
+	PaperlessExportTaskHandler,
 	TASK_TYPE_CREATE_LINKED_DOC,
 	TASK_TYPE_EMAIL_DRAFT,
 	TASK_TYPE_PAPERLESS_EXPORT,
@@ -40,9 +43,17 @@ def validate_step(step, handler):
 	config = extract_task_config(step)
 	if config.get("allow_ai_proposals"):
 		frappe.throw(_("Schritt {0}: KI-Vorschläge und automatische Ausführung schließen sich aus.").format(step.step_key))
-	if step.task_type not in {
-		TASK_TYPE_CREATE_LINKED_DOC, TASK_TYPE_EMAIL_DRAFT, TASK_TYPE_PAPERLESS_EXPORT, TASK_TYPE_PYTHON_ACTION,
-	} or not handler.supports_background_execution:
+	built_in = {
+		TASK_TYPE_CREATE_LINKED_DOC: CreateLinkedDocTaskHandler,
+		TASK_TYPE_EMAIL_DRAFT: EmailDraftTaskHandler,
+		TASK_TYPE_PAPERLESS_EXPORT: PaperlessExportTaskHandler,
+	}
+	supported = (
+		handler.supports_background_execution
+		if step.task_type == TASK_TYPE_PYTHON_ACTION
+		else type(handler) is built_in.get(step.task_type)
+	)
+	if not supported:
 		frappe.throw(_("Schritt {0}: Der Handler unterstützt keine automatische Ausführung.").format(step.step_key))
 	handler.validate_automatic_config(step)
 
@@ -259,6 +270,7 @@ def _record_failure(doctype, name, row_name, token, error, external_effect_compl
 		row, ausfuehrungsstatus=FAILED, ausfuehrung_am=now_datetime(), ausfuehrungsfehler=message,
 		ausfuehrung_faellig=next_attempt, ausfuehrung_ablauf=None, ausfuehrung_token=None,
 		ausfuehrung_ungeklaert=int(uncertain),
+		ausfuehrung_input=row.ausfuehrung_input if uncertain else None,
 	)
 	if next_attempt is None:
 		_notify(engine, doc, row)

@@ -7,7 +7,7 @@ from process_engine.process_engine.processes.linked_create import validate_opt_i
 from frappe import _
 from frappe.model.document import Document
 
-from process_engine.process_engine.processes.engine import get_process_runtime_config
+from process_engine.process_engine.processes.engine import get_process_runtime_config, get_runtime_config_for_typ
 from process_engine.process_engine.processes.task_registry import (
 	TASK_TYPE_MANUAL_CHECK,
 	dump_task_config,
@@ -454,14 +454,15 @@ class ProzessVersion(Document):
 		runtime_doctype = (self.runtime_doctype or "").strip()
 		if not runtime_doctype:
 			frappe.throw(_("Runtime Doctype ist erforderlich."))
-		_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
-		if not get_process_runtime_config(runtime_doctype):
-			frappe.throw(_("Kein Process Runtime fuer Doctype registriert: {0}").format(runtime_doctype))
+		self._get_runtime_config()
 
 	def _get_runtime_config(self):
 		runtime_doctype = (self.runtime_doctype or "").strip()
-		_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
-		config = get_process_runtime_config(runtime_doctype)
+		if runtime_doctype == "Prozess Instanz" and any(step.automatisch for step in self.get("schritte") or []):
+			config = get_runtime_config_for_typ(self.prozess_typ)
+		else:
+			_ensure_runtime_registered(runtime_doctype, self.get("prozess_typ"))
+			config = get_process_runtime_config(runtime_doctype)
 		if not config:
 			frappe.throw(_("Kein Process Runtime fuer Doctype registriert: {0}").format(runtime_doctype))
 		return config
@@ -498,7 +499,6 @@ class ProzessVersion(Document):
 			# source_field ein Link-Spec mit passendem Ziel-Doctype ist). Best-effort: Handler,
 			# die es nicht brauchen, ignorieren das Flag.
 			row.flags.version_payload_specs = self.get("payload_field_specs") or []
-			validate_opt_in(row, extract_task_config(row), complete=bool(self.is_active))
 			validate_row(row, "sichtbar_wenn", "freigabe_wenn")
 			handler.validate_config(row)
 			if row.automatisch:
@@ -507,6 +507,7 @@ class ProzessVersion(Document):
 				validate_step(row, handler)
 				if self.runtime_doctype != "Prozess Instanz":
 					frappe.throw(_("Automatische Schritte benötigen die Runtime Prozess Instanz."))
+			validate_opt_in(row, extract_task_config(row), complete=bool(self.is_active))
 
 		# Edge-Validierung (DAG-Kanten in schritt_kanten)
 		seen_edges: set[tuple[str, str]] = set()

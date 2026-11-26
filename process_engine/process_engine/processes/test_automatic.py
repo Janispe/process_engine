@@ -7,8 +7,8 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date, now_datetime
 
 from . import automatic
-from .engine import ProcessEngine
-from .task_registry import PaperlessExportTaskHandler
+from .engine import ProcessEngine, ProcessPluginRegistry
+from .task_registry import PaperlessExportTaskHandler, PythonActionTaskHandler
 from .triggers import build_trigger_payload, get_triggers_for_source
 
 
@@ -23,6 +23,7 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 		self.version = None
 		self.instance = None
 		self.added_role = None
+		self.created_todos = []
 		# Queue callbacks are recorded locally. execute still uses real commits and locks.
 		self.jobs = []
 		self.enqueue = patch.object(frappe, "enqueue", side_effect=self.capture_job)
@@ -48,13 +49,16 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 			for field in self.version.meta.get_table_fields():
 				frappe.db.delete(field.options, {"parent": self.version.name})
 			frappe.db.delete("Prozess Version", {"name": self.version.name})
-		frappe.db.delete("Prozess Trigger Definition", {"parent": self.typ.name})
+		for name in self.created_todos:
+			frappe.db.delete("ToDo", {"name": name})
+		for df in self.typ.meta.get_table_fields():
+			frappe.db.delete(df.options, {"parent": self.typ.name})
 		frappe.db.delete("Prozess Typ", {"name": self.typ.name})
 		if self.added_role:
 			frappe.db.delete("Has Role", {"name": self.added_role})
 		frappe.db.commit()
 
-	def make_version(self, error=None, *, role=None, task_type="paperless_export"):
+	def make_version(self, error=None, *, role=None, task_type="paperless_export", config=None, handler_key=None):
 		steps = [
 			{"step_key": "derive", "titel": "Datei ableiten", "task_type": "derive",
 			 "konfig_json": json.dumps({"source_field": "source_user", "input_doctype": "User",
@@ -75,6 +79,10 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 			{"step_key": "export", "kind": "payload_input", "target": "derived_name"},
 			{"step_key": "manual", "kind": "step_input", "target": "export"},
 		]
+		if config:
+			steps[1]["konfig_json"] = json.dumps(config)
+		if handler_key:
+			steps[1]["handler_key"] = handler_key
 		if task_type == "email_draft":
 			steps[1]["konfig_json"] = json.dumps({
 				"recipient_field": "recipient", "subject": "Testentwurf", "body": "Entwurf ohne Versand",
@@ -87,8 +95,8 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 		}).insert()
 		return self.version
 
-	def make_instance(self, *, role=None, task_type="paperless_export"):
-		self.make_version(role=role, task_type=task_type)
+	def make_instance(self, **version_options):
+		self.make_version(**version_options)
 		self.instance = frappe.get_doc({
 			"doctype": "Prozess Instanz", "prozess_typ": self.typ.name, "orchestrator_backend": "local",
 			"payload_json": json.dumps({"source_user": "Administrator", "attachment": "/private/files/test.pdf", "recipient": "test@example.org"}),
@@ -214,6 +222,52 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 			self.assertTrue(export.call_args.kwargs["reconcile_only"])
 			self.assertEqual(export.call_args.kwargs["execution_key"], row.ausfuehrung_key)
 			self.assertEqual(self.task().ausfuehrungsstatus, automatic.FAILED)
+
+	def test_linked_creation_uses_the_checked_result_path(self):
+		description = f"Automatic ToDo {self.typ.name}"
+		instance = self.make_instance(task_type="create_linked_doc", config={
+			"target_doctype": "ToDo", "store_in_payload_field": "linked_result",
+			"prefill_mapping": {"description": description},
+		})
+		frappe.db.commit()
+		self.run_export()
+		self.run_export()
+		self.created_todos = frappe.get_all("ToDo", filters={"description": description}, pluck="name")
+		row = self.task()
+		self.assertEqual(row.ausfuehrungsstatus, automatic.DONE, row.ausfuehrungsfehler)
+		self.assertEqual(self.created_todos, [instance.payload("linked_result")])
+		self.assertEqual(json.loads(row.result_json), {"created": self.created_todos[0]})
+
+	def test_registered_python_action_publishes_outputs_once(self):
+		calls = []
+
+		class Handler(PythonActionTaskHandler):
+			supports_background_execution = True
+
+			def execute_automatic(self, context, doc, row, execution_key, reconcile):
+				calls.append((execution_key, reconcile))
+				return {"outputs": {"python_result": "erzeugt"}, "result": {"ok": True}}
+
+		with patch.dict(ProcessPluginRegistry._custom_handlers, {"test_auto_python": Handler()}):
+			self.typ.append("custom_task_handlers", {"plugin_key": "test_auto_python"})
+			self.typ.save()
+			instance = self.make_instance(task_type="python_action", handler_key="test_auto_python", config={
+				"outputs": [{"fieldname": "python_result", "fieldtype": "Data"}],
+			})
+			frappe.db.commit()
+			self.assertEqual(calls, [])
+			self.run_export()
+			self.run_export()
+			row = self.task()
+			self.assertEqual(row.ausfuehrungsstatus, automatic.DONE, row.ausfuehrungsfehler)
+			self.assertEqual(calls, [(row.ausfuehrung_key, False)])
+			self.assertEqual(instance.payload("python_result"), "erzeugt")
+
+	def test_rejects_automatic_ai_proposal(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "KI-Vorschläge und automatische Ausführung"):
+			self.make_version(task_type="create_linked_doc", config={
+				"target_doctype": "ToDo", "store_in_payload_field": "ai_result", "allow_ai_proposals": True,
+			})
 
 	def test_rejects_invalid_version_and_trigger_conditions(self):
 		with self.assertRaisesRegex(frappe.ValidationError, "freigabe_wenn"):

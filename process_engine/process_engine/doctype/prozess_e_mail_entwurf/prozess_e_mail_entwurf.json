@@ -52,6 +52,12 @@
    "role": "System Manager",
    "read": 1,
    "write": 1
+  },
+  {
+   "role": "Hausverwalter",
+   "if_owner": 1,
+   "read": 1,
+   "write": 1
   }
  ],
  "title_field": "subject"

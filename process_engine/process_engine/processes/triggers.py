@@ -117,7 +117,8 @@ def get_triggers_for_source(source_doctype: str, source_name: str | None = None)
 				if trigger.visibility_check and not trigger.visibility_check(source_doc):
 					continue
 				if trigger.visibility_condition and trigger.visibility_condition[1] and not conditions.matches(
-					trigger.visibility_condition, conditions.document_values(source_doc), _build_payload(trigger, source_doc)
+					trigger.visibility_condition, conditions.document_values(source_doc),
+					_build_payload(trigger, source_doc) if _uses_payload(trigger.visibility_condition) else {},
 				):
 					continue
 			except Exception:
@@ -241,6 +242,10 @@ def build_trigger_payload(trigger_id: str, source_name: str) -> dict:
 	):
 		frappe.throw(_("Dieser Prozess-Trigger ist für das Dokument nicht freigegeben."), frappe.PermissionError)
 	return payload
+
+
+def _uses_payload(condition):
+	return any(rule["field"].startswith("payload.") for rule in condition[1])
 
 
 def _build_payload(trigger, source_doc):
