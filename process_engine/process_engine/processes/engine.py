@@ -846,10 +846,11 @@ class ProcessEngine:
 	def _sync_tasks_with_todos(self, doc: Document) -> None:
 		engine_owned = {row.name for row in linked_create.opted_rows(doc)}
 		for row in doc.get(self.config.task_fieldname) or []:
-			if row.name in engine_owned:
+			if row.name in engine_owned or not self._task_visible(doc, row):
 				continue
 			if automatic.enabled(self, doc, row):
-				self._sync_todo_from_row(doc, row)
+				if not doc.is_new():
+					self._sync_todo_from_row(doc, row)
 				continue
 			todo_name = (row.todo or "").strip()
 			if todo_name:

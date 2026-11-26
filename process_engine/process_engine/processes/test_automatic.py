@@ -9,6 +9,7 @@ from frappe.utils import add_to_date, now_datetime
 from . import automatic
 from .engine import ProcessEngine
 from .task_registry import PaperlessExportTaskHandler
+from .triggers import build_trigger_payload, get_triggers_for_source
 
 
 class TestAutomaticProcessSteps(FrappeTestCase):
@@ -21,6 +22,7 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 		}).insert()
 		self.version = None
 		self.instance = None
+		self.added_role = None
 		# Queue callbacks are recorded locally. execute still uses real commits and locks.
 		self.jobs = []
 		self.enqueue = patch.object(frappe, "enqueue", side_effect=self.capture_job)
@@ -36,23 +38,29 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 	def clean_data(self):
 		frappe.db.rollback()
 		if self.instance:
+			frappe.db.delete("Notification Log", {"document_name": self.instance.name})
+			frappe.db.delete("Prozess E-Mail Entwurf", {"prozess_instanz": self.instance.name})
 			frappe.db.delete("Prozess Aufgabe Datei", {"prozess_name": self.instance.name})
 			frappe.db.delete("Prozess Aufgabe", {"parent": self.instance.name})
+			frappe.db.delete("ToDo", {"reference_name": self.instance.name, "reference_type": self.instance.doctype})
 			frappe.db.delete("Prozess Instanz", {"name": self.instance.name})
 		if self.version:
 			for field in self.version.meta.get_table_fields():
 				frappe.db.delete(field.options, {"parent": self.version.name})
 			frappe.db.delete("Prozess Version", {"name": self.version.name})
+		frappe.db.delete("Prozess Trigger Definition", {"parent": self.typ.name})
 		frappe.db.delete("Prozess Typ", {"name": self.typ.name})
+		if self.added_role:
+			frappe.db.delete("Has Role", {"name": self.added_role})
 		frappe.db.commit()
 
-	def make_version(self, error=None):
-		step = "paperless_export"
+	def make_version(self, error=None, *, role=None, task_type="paperless_export"):
 		steps = [
 			{"step_key": "derive", "titel": "Datei ableiten", "task_type": "derive",
 			 "konfig_json": json.dumps({"source_field": "source_user", "input_doctype": "User",
 				"derivations": [{"path": "first_name", "field": "derived_name"}]})},
-			{"step_key": "export", "titel": "Export", "task_type": step, "automatisch": 1,
+			{"step_key": "export", "titel": "Export", "task_type": task_type, "automatisch": 1,
+			 "standard_verantwortlich_rolle": role,
 			 "konfig_json": json.dumps({"dokument_typ_tag": "Test", "file_url_field": "attachment"}),
 			 "freigabe_wenn": error or '{"all":[{"field":"payload.derived_name","op":"is_not_empty"}]}'},
 			{"step_key": "manual", "titel": "Prüfen", "task_type": "manual_check", "pflicht": 1},
@@ -60,13 +68,18 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 			 "sichtbar_wenn": '{"all":[{"field":"payload.missing","op":"is_not_empty"}]}'},
 		]
 		specs = [
-			{"fieldname": "source_user", "label": "Quelle", "fieldtype": "Link", "link_doctype": "User"},
+			{"fieldname": "source_user", "label": "Quelle", "fieldtype": "Link", "options": "User"},
 			{"fieldname": "attachment", "label": "Datei", "fieldtype": "Data"},
 		]
 		io = [
 			{"step_key": "export", "kind": "payload_input", "target": "derived_name"},
 			{"step_key": "manual", "kind": "step_input", "target": "export"},
 		]
+		if task_type == "email_draft":
+			steps[1]["konfig_json"] = json.dumps({
+				"recipient_field": "recipient", "subject": "Testentwurf", "body": "Entwurf ohne Versand",
+			})
+			specs.append({"fieldname": "recipient", "label": "Empfänger", "fieldtype": "Data"})
 		self.version = frappe.get_doc({
 			"doctype": "Prozess Version", "version_key": f"v1-{self.typ.name}", "titel": "Automatik",
 			"prozess_typ": self.typ.name, "runtime_doctype": "Prozess Instanz", "is_active": 1,
@@ -74,11 +87,11 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 		}).insert()
 		return self.version
 
-	def make_instance(self):
-		self.make_version()
+	def make_instance(self, *, role=None, task_type="paperless_export"):
+		self.make_version(role=role, task_type=task_type)
 		self.instance = frappe.get_doc({
 			"doctype": "Prozess Instanz", "prozess_typ": self.typ.name, "orchestrator_backend": "local",
-			"payload_json": json.dumps({"source_user": "Administrator", "attachment": "/private/files/test.pdf"}),
+			"payload_json": json.dumps({"source_user": "Administrator", "attachment": "/private/files/test.pdf", "recipient": "test@example.org"}),
 		}).insert()
 		return self.instance
 
@@ -131,10 +144,20 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 	def test_error_backoff_notification_and_manual_retry(self):
 		with (
 			patch.object(PaperlessExportTaskHandler, "_request_export", side_effect=ValueError("Testfehler")) as export,
-			patch.object(automatic, "_notify") as notify,
+			patch.object(automatic, "_notify", wraps=automatic._notify) as notify,
 		):
-			instance = self.make_instance()
+			instance = self.make_instance(role="System Manager")
+			recipients = set(frappe.get_all("Has Role", filters={"role": "System Manager", "parenttype": "User"}, pluck="parent"))
+			if not recipients:
+				# Administrator receives every role implicitly on a fresh Frappe site.
+				role = frappe.get_doc({"doctype": "Has Role", "parent": "Administrator", "parenttype": "User",
+					"parentfield": "roles", "role": "System Manager"})
+				role.db_insert()
+				self.added_role = role.name
+				recipients = {"Administrator"}
 			frappe.db.commit()
+			recipients = {user for user in recipients if frappe.db.get_value("User", user, "enabled")}
+			self.assertTrue(recipients)
 			for attempt in range(1, 4):
 				self.run_export()
 				row = self.task()
@@ -149,6 +172,9 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 					frappe.db.set_value(row.doctype, row.name, "ausfuehrung_faellig", now_datetime())
 					frappe.db.commit()
 			notify.assert_called_once()
+			self.assertEqual(set(frappe.get_all("Notification Log", filters={
+				"document_name": instance.name, "document_type": instance.doctype,
+			}, pluck="for_user")), recipients)
 			self.assertFalse(row.ausfuehrung_faellig)
 			key = row.ausfuehrung_key
 			export.side_effect = None
@@ -158,6 +184,19 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 			self.run_export()
 			self.assertEqual(self.task().ausfuehrungsstatus, automatic.DONE)
 			self.assertEqual(self.task().ausfuehrung_key, key)
+
+	def test_email_draft_is_saved_without_sending(self):
+		instance = self.make_instance(task_type="email_draft")
+		frappe.db.commit()
+		with patch.object(frappe, "sendmail") as send:
+			self.run_export()
+			self.run_export()
+			send.assert_not_called()
+		draft = frappe.get_doc("Prozess E-Mail Entwurf", json.loads(self.task().result_json)["draft"])
+		self.assertEqual(draft.prozess_instanz, instance.name)
+		self.assertEqual(draft.recipient, "test@example.org")
+		self.assertEqual(draft.subject, "Testentwurf")
+		self.assertEqual(frappe.db.count(draft.doctype, {"prozess_instanz": instance.name}), 1)
 
 	def test_expired_claim_reconciles_without_replaying(self):
 		with patch.object(PaperlessExportTaskHandler, "_request_export", side_effect=automatic.UncertainEffect("Offen")) as export:
@@ -184,3 +223,28 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 		})
 		with self.assertRaisesRegex(frappe.ValidationError, "visibility_when"):
 			self.typ.save()
+
+	def test_database_trigger_checks_source_and_mapped_payload(self):
+		key = self.typ.name
+		self.typ.append("triggers", {
+			"key": key, "source_doctype": "User", "button_label": "Start",
+			"input_mapping_json": json.dumps({"enabled": {"kind": "fixed", "value": True}}),
+			"visibility_when": json.dumps({"all": [
+				{"field": "doc.name", "op": "==", "value": "Administrator"},
+				{"field": "payload.enabled", "op": "==", "value": True},
+			]}),
+		})
+		self.typ.save()
+		trigger_id = f"User::{key}"
+		self.assertIn(trigger_id, {trigger["trigger_id"] for trigger in get_triggers_for_source("User", "Administrator")})
+		self.assertTrue(build_trigger_payload(trigger_id, "Administrator")["enabled"])
+		self.assertNotIn(trigger_id, {trigger["trigger_id"] for trigger in get_triggers_for_source("User", "Guest")})
+		with self.assertRaises(frappe.PermissionError):
+			build_trigger_payload(trigger_id, "Guest")
+
+	def test_automatic_steps_are_rejected_on_temporal(self):
+		self.make_version()
+		with self.assertRaisesRegex(frappe.ValidationError, "Temporal"):
+			frappe.get_doc({
+				"doctype": "Prozess Instanz", "prozess_typ": self.typ.name, "orchestrator_backend": "temporal",
+			}).insert()
