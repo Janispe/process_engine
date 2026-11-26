@@ -7,7 +7,7 @@
 //   density                                — "compact" | "comfortable"
 //   helpers                                — Bridge-Helpers (an Widgets weitergereicht)
 
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { TASK_TYPES } from "./data.js";
 import { STEP_STATUS, statusStyle, fmtDue, fmtDateTime, fmtPayloadValue } from "./instance-data.js";
 import { getTaskActionWidget } from "./instance-task-widgets.jsx";
@@ -154,6 +154,27 @@ function IOTable({ step, version, payload }) {
 
 // ---------- Task Detail ----------------------------------------------------
 
+function TaskExtension({ descriptor, rowName, mount }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    let active = true;
+    let cleanup;
+    const container = ref.current;
+    const host = document.createElement("div");
+    container.append(host);
+    Promise.resolve(mount(descriptor, host, rowName)).then((dispose) => {
+      if (active) cleanup = dispose;
+      else dispose?.();
+    }).catch(() => host.remove());
+    return () => {
+      active = false;
+      cleanup?.();
+      host.remove();
+    };
+  }, [descriptor, rowName, mount]);
+  return <div ref={ref} />;
+}
+
 function TaskDetail({ step, statusRec, version, payload, onComplete, helpers }) {
   const tt = TASK_TYPES[step.task_type] || { glyph: "?", label: step.task_type };
   const st = STEP_STATUS[statusRec.status] || STEP_STATUS.pending;
@@ -269,6 +290,7 @@ function TaskDetail({ step, statusRec, version, payload, onComplete, helpers }) 
           </div>
         ) : Action ? (
           <Action
+            key={step.step_key}
             step={step}
             statusRec={statusRec}
             version={version}
@@ -283,6 +305,9 @@ function TaskDetail({ step, statusRec, version, payload, onComplete, helpers }) 
           </div>
         )}
 
+        {statusRec.rowName && helpers?.extensions?.map((descriptor) => (
+          <TaskExtension key={descriptor.component} descriptor={descriptor} rowName={statusRec.rowName} mount={helpers.mountTaskExtension} />
+        ))}
         {statusRec.kommentar && statusRec.status !== "done" && (
           <div style={{
             marginTop: 12,
