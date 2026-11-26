@@ -104,9 +104,13 @@ async function _pe_render_instance_view(frm) {
 	field.$wrapper.append(container);
 
 	// Version (eine pro Instanz) + Action-Deskriptoren parallel laden.
-	const [version, actionsByRow] = await Promise.all([
+	const [version, actionsByRow, extensions] = await Promise.all([
 		frappe.db.get_doc("Prozess Version", frm.doc.prozess_version),
 		_pe_get_actions(frm),
+		frappe.call({
+			method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_task_detail_extensions",
+			args: { docname: frm.doc.name },
+		}).then((response) => response.message || []).catch(() => []),
 	]);
 
 	let payload = {};
@@ -124,6 +128,7 @@ async function _pe_render_instance_view(frm) {
 		if (!sk) continue;
 		rowByStep[sk] = row;
 		statusMap[sk] = {
+			rowName: row.name,
 			status: _pe_status_token(frm, row),
 			faelligkeit_am: row.faellig_am || null,
 			erledigt_am: row.erfuellt_am || null,
@@ -162,6 +167,23 @@ async function _pe_render_instance_view(frm) {
 
 		helpers: {
 			frm,
+			extensions,
+			async mountTaskExtension(descriptor, container, rowName) {
+				if (!/^\/assets\/[a-zA-Z0-9_/-]+(?:\.[a-zA-Z0-9_-]+)*\.js$/.test(descriptor.bundle)) return;
+				await frappe.require(descriptor.bundle);
+				if (!container.isConnected) return;
+				const mount = window.process_engine?.task_detail_extensions?.[descriptor.component];
+				if (typeof mount === "function") {
+					return mount(container, { docname: frm.doc.name, rowName, reload: () => frm.reload_doc() });
+				}
+			},
+			async getCreateDialog(rowName) {
+				const response = await frappe.call({
+					method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_task_action_dialog",
+					args: { docname: frm.doc.name, row_name: rowName, action_key: "create_linked" },
+				});
+				return response.message;
+			},
 			getMeta(doctype) {
 				return frappe.get_meta(doctype) || { fields: [] };
 			},

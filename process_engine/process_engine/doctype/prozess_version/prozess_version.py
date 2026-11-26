@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import frappe
+
+from process_engine.process_engine.processes.linked_create import validate_opt_in
 from frappe import _
 from frappe.model.document import Document
 
@@ -80,6 +82,8 @@ class ProzessVersion(Document):
 
 	def _enforce_active_immutability(self) -> None:
 		if self.is_new():
+			if self.is_active:
+				self.wurde_aktiviert = 1
 			return
 		# Migration-Patches (z.B. move_payload_specs_to_version) muessen
 		# Specs nachtraeglich auf aktive Versionen kopieren koennen.
@@ -97,7 +101,7 @@ class ProzessVersion(Document):
 		# Monotonie erzwingen: wurde_aktiviert darf nie 1 -> 0 zurueck. Das Feld ist nur
 		# UI-readonly; ein API-/Script-Save koennte es sonst (ohne Content-Diff) auf 0
 		# setzen und eine ehemals aktive Version wieder editierbar machen. Re-asserten.
-		if was_ever_active and not self.wurde_aktiviert:
+		if (was_ever_active or was_active) and not self.wurde_aktiviert:
 			self.wurde_aktiviert = 1
 		diffs = self._compute_content_diffs(before)
 
@@ -492,6 +496,7 @@ class ProzessVersion(Document):
 			# source_field ein Link-Spec mit passendem Ziel-Doctype ist). Best-effort: Handler,
 			# die es nicht brauchen, ignorieren das Flag.
 			row.flags.version_payload_specs = self.get("payload_field_specs") or []
+			validate_opt_in(row, extract_task_config(row), complete=bool(self.is_active))
 			handler.validate_config(row)
 
 		# Edge-Validierung (DAG-Kanten in schritt_kanten)
@@ -720,8 +725,10 @@ def get_activation_preview(name: str) -> dict:
 
 @frappe.whitelist()
 def activate_version(name: str) -> str:
-	doc = frappe.get_doc("Prozess Version", name)
+	doc = frappe.get_doc("Prozess Version", name, for_update=True)
 	doc.check_permission("write")
+	for step in doc.schritte:
+		validate_opt_in(step, extract_task_config(step), complete=True)
 	filters = _active_version_scope_filters(doc)
 	filters["name"] = ("!=", doc.name)
 	others = frappe.get_all(

@@ -512,6 +512,7 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 			"fields": [
 				{"key": "target_doctype", "label": _("Ziel-Doctype"), "fieldtype": "Link", "options": "DocType", "reqd": 1},
 				{"key": "store_in_payload_field", "label": _("Ergebnis-Feld (Name)"), "fieldtype": "Data", "reqd": 1},
+				{"key": "allow_ai_proposals", "label": _("KI-Vorschläge zulassen"), "fieldtype": "Check"},
 				{"key": "doc_field_mapping", "label": _("Feld-Mapping"), "fieldtype": "Data", "widget": "doc_field_mapping"},
 			]
 		}
@@ -522,6 +523,13 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 			frappe.throw(_("create_linked_doc erfordert target_doctype in der Konfig."))
 		if not (config.get("store_in_payload_field") or "").strip():
 			frappe.throw(_("create_linked_doc erfordert store_in_payload_field in der Konfig."))
+
+	def declared_inputs(self, config: dict) -> list[str]:
+		if config.get("allow_ai_proposals"):
+			from .linked_create import mapped_inputs
+
+			return mapped_inputs(config)
+		return []
 
 	def declared_outputs(self, config: dict) -> list[dict]:
 		field = (config.get("store_in_payload_field") or "").strip()
@@ -550,6 +558,11 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 
 		if action_key != "create_linked":
 			return {"fields": []}
+		from .linked_create import opted_config, resolve
+
+		if opted_config(doc, task_row):
+			doc.check_permission("read")
+			return resolve(doc, task_row).dialog()
 		config = extract_task_config(task_row)
 		dialog_fields = list(config.get("dialog_fields") or [])
 		prefill = config.get("prefill_mapping") or {}
@@ -593,9 +606,11 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 		return TaskCheckResult(fulfilled=bool(value), meta={"value": value, "field": field})
 
 	def create_linked_doc(self, context: TaskHandlerContext, doc: Document, task_row, user_values: dict | None = None) -> dict:
-		"""Erstellt target_doc mit user_values + Pre-Fill aus Payload."""
-		import json as _json
+		"""Legacy creation for tasks without the proposal input contract."""
+		from .linked_create import opted_config, unavailable
 
+		if opted_config(doc, task_row):
+			unavailable()
 		config = extract_task_config(task_row)
 		target_doctype = (config.get("target_doctype") or "").strip()
 		field = (config.get("store_in_payload_field") or "").strip()
@@ -608,7 +623,7 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 		raw_payload = getattr(doc, "payload_json", None)
 		if raw_payload:
 			try:
-				parsed = _json.loads(raw_payload)
+				parsed = json.loads(raw_payload)
 				if isinstance(parsed, dict):
 					payload = parsed
 			except (ValueError, TypeError):
@@ -622,18 +637,50 @@ class CreateLinkedDocTaskHandler(BaseTaskHandler):
 				prefilled[k] = v_template
 
 		new_doc_data = {**prefilled, **(user_values or {})}
-		new_doc_data["doctype"] = target_doctype
-		new_doc = frappe.get_doc(new_doc_data).insert(ignore_permissions=False)
+		return self._insert_and_complete(doc, task_row, target_doctype, field, new_doc_data)
 
-		# Zurueckschreiben in payload + Task auf Erledigt
+	def create_checked(self, task, values):
+		return self._insert_and_complete(task.doc, task.row, task.target, task.output, values, checked_task=task)
+
+	def _insert_and_complete(self, doc, row, doctype, output, values, *, checked_task=None):
+		from contextlib import nullcontext
+		from .linked_create import persist_result, unavailable
+
+		new_doc = frappe.get_doc({**values, "doctype": doctype}).insert(ignore_permissions=False)
+		if checked_task:
+			stored = frappe.get_doc(doctype, new_doc.name)
+			expected = {key: item["value"] for key, item in checked_task.context["system_defaults"].items()}
+			expected.update({key: values.get(key) for key in checked_task.fields})
+			for key in stored.meta.get_fieldnames_with_value(with_virtual_fields=False):
+				actual = stored.get(key)
+				if str(actual or "") != str(expected.get(key) or ""):
+					unavailable()
+
 		if hasattr(doc, "payload_set") and callable(doc.payload_set):
-			doc.payload_set(field, new_doc.name)
+			doc.payload_set(output, new_doc.name)
 		else:
-			doc.set(field, new_doc.name)
-		task_row.status = "Erledigt"
-		task_row.result_json = frappe.as_json({"created": new_doc.name})
-		doc.save(ignore_permissions=True)
-		return {"created_doctype": target_doctype, "created_name": new_doc.name}
+			doc.set(output, new_doc.name)
+		row.status = "Erledigt"
+		row.result_json = frappe.as_json({"created": new_doc.name})
+		scope = persist_result(doc, row, output, new_doc.name) if checked_task else nullcontext()
+		with scope:
+			if checked_task:
+				doc.save()
+				persisted = frappe.get_doc(doc.doctype, doc.name, for_update=True)
+				persisted_row = next((entry for entry in persisted.aufgaben if entry.name == row.name), None)
+				if (not persisted_row or persisted_row.status != "Erledigt" or not persisted_row.erfuellt
+					or persisted_row.erfuellt_von != frappe.session.user or persisted.payload(output) != new_doc.name or json.loads(persisted_row.result_json or "{}") != {"created": new_doc.name}
+					or any(persisted.payload(key) != value for key, value in checked_task.context["inputs"].items())):
+					unavailable()
+				if bool(persisted_row.todo) != bool(persisted_row.verantwortlich):
+					unavailable()
+				if persisted_row.todo:
+					status = frappe.db.get_value("ToDo", persisted_row.todo, "status", for_update=True)
+					if status != "Closed":
+						unavailable()
+			else:
+				doc.save(ignore_permissions=True)
+		return {"created_doctype": doctype, "created_name": new_doc.name}
 
 
 class DeriveTaskHandler(BaseTaskHandler):

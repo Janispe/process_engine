@@ -13,7 +13,7 @@
 //   window.process_engine.register_task_action_widget(task_type, Component)
 // — siehe index-instance.jsx, das die Registry an window spiegelt.
 
-import React, { useState, useRef, useMemo } from "react";
+import React, { useState, useRef, useMemo, useEffect } from "react";
 import { fmtDateTime, fmtPayloadValue } from "./instance-data.js";
 
 // ---------- Registry (module-level) ----------------------------------------
@@ -648,7 +648,65 @@ export function EmailDraftWidget({ step, version, payload, onComplete, helpers }
 // CREATE_LINKED_DOC
 // ============================================================================
 
-export function CreateLinkedDocWidget({ step, version, payload, onComplete, helpers }) {
+function CheckedCreateLinkedDoc({ statusRec, onComplete, helpers }) {
+  const [fields, setFields] = useState([]);
+  const [values, setValues] = useState({});
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    let active = true;
+    helpers.getCreateDialog(statusRec.rowName).then((dialog) => {
+      if (active) setFields(dialog.fields);
+    }).catch(() => {
+      if (active) setError("Die Eingaben sind in diesem Prozessstand nicht verfügbar.");
+    });
+    return () => { active = false; };
+  }, [statusRec.rowName, helpers]);
+  const missing = fields.some((field) => field.reqd && !field.read_only && !values[field.fieldname]);
+  const submit = async () => {
+    setPending(true);
+    try {
+      await onComplete({ created: values });
+    } finally {
+      setPending(false);
+    }
+  };
+  if (error) return <p role="status">{error}</p>;
+  if (!fields.length) return <p role="status">Lade Eingaben …</p>;
+  return (
+    <>
+      {fields.map((field) => {
+        const value = field.read_only ? field.default : (values[field.fieldname] ?? "");
+        const change = (event) => setValues({ ...values, [field.fieldname]: event.target.value });
+        return (
+          <label className="cld-field" key={field.fieldname}>
+            <span>{field.label}{field.reqd ? " *" : ""}{field.read_only ? " · Prozessvorgabe" : ""}</span>
+            {field.fieldtype === "Select" && !field.read_only ? (
+              <select className="act-input" value={value} onChange={change}>
+                <option value=""></option>
+                {(field.options || "").split("\n").filter(Boolean).map((option) => <option key={option}>{option}</option>)}
+              </select>
+            ) : (
+              <input className="act-input" value={value ?? ""} onChange={change} readOnly={!!field.read_only} maxLength={field.length} />
+            )}
+          </label>
+        );
+      })}
+      <ActionFooter>
+        <button className="btn primary" disabled={pending || missing} onClick={submit}>Anlegen</button>
+      </ActionFooter>
+    </>
+  );
+}
+
+export function CreateLinkedDocWidget(props) {
+  if (cfgOf(props.step).allow_ai_proposals && props.statusRec.rowName && props.helpers?.getCreateDialog) {
+    return <CheckedCreateLinkedDoc {...props} />;
+  }
+  return <LegacyCreateLinkedDoc {...props} />;
+}
+
+function LegacyCreateLinkedDoc({ step, version, payload, onComplete, helpers }) {
   const cfg = cfgOf(step);
   const getMeta = (helpers && helpers.getMeta) || (() => ({ fields: [] }));
   const meta = getMeta(cfg.target_doctype) || { fields: [] };

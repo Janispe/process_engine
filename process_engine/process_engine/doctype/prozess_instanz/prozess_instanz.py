@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 
 import frappe
 from frappe import _
 
 from process_engine.process_engine.processes import BaseProcessDocument, ProcessEngine
+from process_engine.process_engine.processes.linked_create import protect_result
 from process_engine.process_engine.processes.instance_titles import build_instance_title
 
 
@@ -15,14 +17,28 @@ class ProzessInstanz(BaseProcessDocument):
 	Die Runtime-Config wird nicht aus _PROCESS_RUNTIMES, sondern aus dem
 	prozess_typ-Doc geladen (siehe engine.py:get_runtime_config_for_typ)."""
 
-	def before_save(self) -> None:
+	def validate(self) -> None:
+		protect_result(self, before_engine=True)
+		super().validate()
+
+	def _before_writing_instance(self) -> None:
+		protected_rows = protect_result(self)
+		if protected_rows and not self.is_new():
+			self._engine().sync_linked_create_assignments(self, protected_rows)
 		self.bezeichnung = build_instance_title(self)
+
+	def before_save(self) -> None:
+		self._before_writing_instance()
 
 	def before_submit(self) -> None:
-		self.bezeichnung = build_instance_title(self)
+		self._before_writing_instance()
 
 	def before_update_after_submit(self) -> None:
+		protect_result(self)
 		self.bezeichnung = build_instance_title(self)
+
+	def before_cancel(self) -> None:
+		protect_result(self)
 
 	def payload(self, key: str, default=None):
 		"""Convenience-Accessor fuer payload_json-Felder. In Print-Formaten verwendbar
@@ -90,7 +106,7 @@ def get_active_version(prozess_typ: str | None = None) -> dict:
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def dispatch_workflow_action(
 	docname: str, action: str, payload_json: str | None = None, timeout_seconds: int = 5
 ) -> dict:
@@ -178,6 +194,19 @@ def get_task_views(docname: str) -> dict:
 			view = None
 		result[row.name] = _sanitize_task_view(view)
 	return result
+
+
+@frappe.whitelist()
+def get_task_detail_extensions(docname: str) -> list[dict]:
+	"""Installed apps may add a local widget alongside the standard task action."""
+	doc = frappe.get_doc("Prozess Instanz", docname)
+	doc.check_permission("read")
+	extensions = []
+	for path in frappe.get_hooks("process_engine_task_detail_extensions"):
+		descriptor = _sanitize_task_view(frappe.get_attr(path)(doc))
+		if descriptor and re.fullmatch(r"/assets/[a-zA-Z0-9_/-]+(?:\.[a-zA-Z0-9_-]+)*\.js", descriptor.get("bundle", "")):
+			extensions.append(descriptor)
+	return extensions
 
 
 # ==================== Phase 13 B: Selbstbeschreibende Laufzeit-Aktionen ====================
@@ -288,7 +317,7 @@ def _sanitize_navigate(navigate) -> dict | None:
 	return {"kind": kind, "target": list(target) if isinstance(target, tuple) else target}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def run_task_action(docname: str, row_name: str, action_key: str, payload_json: str | None = None) -> dict:
 	"""Fuehrt eine vom Handler deklarierte Laufzeit-Aktion aus.
 
