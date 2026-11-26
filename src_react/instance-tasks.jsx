@@ -242,7 +242,24 @@ function TaskDetail({ step, statusRec, version, payload, onComplete, helpers }) 
           );
         })()}
 
-        {blocked ? (
+        {statusRec.execution?.status ? (
+          <div>
+            <div className="td-section-h">Automatische Ausführung · {statusRec.execution.status}</div>
+            {statusRec.execution.at && <p>{fmtDateTime(statusRec.execution.at)}</p>}
+            {statusRec.execution.error && <p>{statusRec.execution.error}</p>}
+            {statusRec.execution.draft && (
+              <button type="button" className="btn" onClick={() => helpers.openDraft(statusRec.execution.draft)}>
+                Entwurf öffnen
+              </button>
+            )}
+            {(statusRec.automaticActions || []).map((action) => (
+              <button type="button" key={action.key} className="btn" disabled={action.disabled} title={action.reason}
+                      onClick={() => helpers.runAutomaticAction(statusRec.rowName, action.key)}>
+                {action.label}
+              </button>
+            ))}
+          </div>
+        ) : blocked ? (
           <div style={{
             padding: 14,
             background: "var(--warn-soft)",

@@ -104,9 +104,13 @@ async function _pe_render_instance_view(frm) {
 	field.$wrapper.append(container);
 
 	// Version (eine pro Instanz) + Action-Deskriptoren parallel laden.
-	const [version, actionsByRow, extensions] = await Promise.all([
+	const [version, actionsByRow, execution, extensions] = await Promise.all([
 		frappe.db.get_doc("Prozess Version", frm.doc.prozess_version),
 		_pe_get_actions(frm),
+		frappe.call({
+			method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_task_execution_view",
+			args: { docname: frm.doc.name },
+		}).then(({ message }) => message || {}),
 		frappe.call({
 			method: "process_engine.process_engine.doctype.prozess_instanz.prozess_instanz.get_task_detail_extensions",
 			args: { docname: frm.doc.name },
@@ -123,13 +127,21 @@ async function _pe_render_instance_view(frm) {
 	// statusMap + step_key -> aufgaben-Row.
 	const rowByStep = {};
 	const statusMap = {};
+	const hidden = new Set();
 	for (const row of frm.doc.aufgaben || []) {
 		const sk = (row.step_key || "").trim();
 		if (!sk) continue;
+		const state = execution[row.name];
+		if (state && !state.visible) {
+			hidden.add(sk);
+			continue;
+		}
 		rowByStep[sk] = row;
 		statusMap[sk] = {
 			rowName: row.name,
-			status: _pe_status_token(frm, row),
+			status: _pe_status_token(frm, row, state),
+			execution: state,
+			automaticActions: state?.status ? actionsByRow[row.name] : null,
 			faelligkeit_am: row.faellig_am || null,
 			erledigt_am: row.erfuellt_am || null,
 			kommentar: "",
@@ -141,7 +153,7 @@ async function _pe_render_instance_view(frm) {
 	// Schritte ohne Aufgaben-Row -> als wartend zeigen, statt unsichtbar.
 	for (const s of version.schritte || []) {
 		const sk = (s.step_key || "").trim();
-		if (sk && !statusMap[sk]) statusMap[sk] = { status: "pending" };
+		if (sk && !hidden.has(sk) && !statusMap[sk]) statusMap[sk] = { status: "pending" };
 	}
 
 	window.ProcessInstanceReact.mount(container, {
@@ -149,8 +161,8 @@ async function _pe_render_instance_view(frm) {
 			version_key: version.version_key,
 			titel: version.titel,
 			prozess_typ: version.prozess_typ,
-			schritte: version.schritte || [],
-			schritt_io: version.schritt_io || [],
+			schritte: (version.schritte || []).filter((step) => !hidden.has(step.step_key)),
+			schritt_io: (version.schritt_io || []).filter((port) => !hidden.has(port.step_key) && (port.kind !== "step_input" || !hidden.has(port.target))),
 			payload_field_specs: version.payload_field_specs || [],
 		},
 		instance: {
@@ -168,6 +180,13 @@ async function _pe_render_instance_view(frm) {
 		helpers: {
 			frm,
 			extensions,
+			async runAutomaticAction(rowName, key) {
+				await frappe.call({ method: PE_RUN_ACTION, args: { docname: frm.doc.name, row_name: rowName, action_key: key } });
+				await frm.reload_doc();
+			},
+			openDraft(name) {
+				frappe.set_route("Form", "Prozess E-Mail Entwurf", name);
+			},
 			async mountTaskExtension(descriptor, container, rowName) {
 				if (!/^\/assets\/[a-zA-Z0-9_/-]+(?:\.[a-zA-Z0-9_-]+)*\.js$/.test(descriptor.bundle)) return;
 				await frappe.require(descriptor.bundle);
@@ -252,11 +271,11 @@ async function _pe_render_instance_view(frm) {
 
 // ---- Status: DE-Aufgaben-Status -> Viewer-Tokens -------------------------------
 
-function _pe_status_token(frm, row) {
+function _pe_status_token(frm, row, state) {
 	if (row.erfuellt || (row.status || "") === "Erledigt") return "done";
 	if ((row.status || "") === "In Arbeit") return "in_progress";
 	// Offen: freigeschaltet (direkte Vorgaenger erfuellt) -> ready, sonst wartend.
-	return _pe_task_unlocked(frm, row) ? "ready" : "pending";
+	return (state ? state.unlocked : _pe_task_unlocked(frm, row)) ? "ready" : "pending";
 }
 
 // UX-Approximation (direkte deps); Server entscheidet transitiv. Genuegt fuers Token.

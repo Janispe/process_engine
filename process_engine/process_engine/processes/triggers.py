@@ -11,7 +11,7 @@ from __future__ import annotations
 import frappe
 from frappe import _
 
-from process_engine.process_engine.processes import ensure_process_runtimes_registered
+from process_engine.process_engine.processes import conditions, ensure_process_runtimes_registered
 from process_engine.process_engine.processes.engine import _PROCESS_RUNTIMES, ProcessTrigger
 
 
@@ -110,9 +110,15 @@ def get_triggers_for_source(source_doctype: str, source_name: str | None = None)
 			continue
 		if not frappe.has_permission(target_doctype, ptype="create"):
 			continue
-		if source_doc is not None and trigger.visibility_check is not None:
+		if source_doc is None and trigger.visibility_condition and trigger.visibility_condition[1]:
+			continue
+		if source_doc is not None and (trigger.visibility_check or trigger.visibility_condition):
 			try:
-				if not bool(trigger.visibility_check(source_doc)):
+				if trigger.visibility_check and not trigger.visibility_check(source_doc):
+					continue
+				if trigger.visibility_condition and trigger.visibility_condition[1] and not conditions.matches(
+					trigger.visibility_condition, conditions.document_values(source_doc), _build_payload(trigger, source_doc)
+				):
 					continue
 			except Exception:
 				frappe.log_error(
@@ -229,11 +235,20 @@ def build_trigger_payload(trigger_id: str, source_name: str) -> dict:
 		)
 	source_doc = frappe.get_doc(trigger.source_doctype, source_name)
 	source_doc.check_permission("read")  # hart werfen bei fehlendem Read auf Source-Doc
+	payload = _build_payload(trigger, source_doc)
+	if trigger.visibility_condition and not conditions.matches(
+		trigger.visibility_condition, conditions.document_values(source_doc), payload
+	):
+		frappe.throw(_("Dieser Prozess-Trigger ist für das Dokument nicht freigegeben."), frappe.PermissionError)
+	return payload
+
+
+def _build_payload(trigger, source_doc):
 	payload = trigger.payload_builder(source_doc) or {}
 	if not isinstance(payload, dict):
 		frappe.throw(_("payload_builder muss ein Dict zurueckgeben (got {0}).").format(type(payload).__name__))
 	# Phase 3: deklaratives Input-Mapping ueberlagert den payload_builder.
-	payload = _apply_trigger_input_mapping(trigger, source_name, payload)
+	payload = _apply_trigger_input_mapping(trigger, source_doc.name, payload)
 	return payload
 
 

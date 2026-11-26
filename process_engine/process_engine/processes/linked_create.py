@@ -70,7 +70,7 @@ def mapped_inputs(config):
 	]
 
 
-def _field_contract(config, *, complete=True):
+def _field_contract(config, *, complete=True, automatic=False):
 	target = config.get("target_doctype")
 	output = config.get("store_in_payload_field")
 	if not isinstance(target, str) or not target or not isinstance(output, str) or not re.fullmatch(r"[a-zA-Z_][a-zA-Z_0-9]*", output):
@@ -89,7 +89,9 @@ def _field_contract(config, *, complete=True):
 	manual = {item.get("fieldname"): item for item in dialog if isinstance(item.get("fieldname"), str)}
 	if len(manual) != len(dialog) or manual.keys() & mapping.keys() or manual.keys() & set(wired):
 		frappe.throw(_("Die Eingabefelder müssen eindeutig einer Quelle zugeordnet sein."))
-	if not allowed or len(set(allowed)) != len(allowed) or not set(allowed) <= manual.keys():
+	if automatic and (manual or allowed):
+		frappe.throw(_("Automatische Erstellaufgaben benötigen feste oder zugeordnete Felder."))
+	if not automatic and (not allowed or len(set(allowed)) != len(allowed) or not set(allowed) <= manual.keys()):
 		frappe.throw(_("Wähle die vorschlagbaren manuellen Felder ausdrücklich aus."))
 	if complete and not set(wired) <= mapping.keys():
 		unavailable()
@@ -319,7 +321,7 @@ class LinkedCreateTask:
 			"primary_label": _("Anlegen")}
 
 
-def resolve(doc, row):
+def resolve(doc, row, *, automatic=False):
 	"""Use the caller's fresh instance. Execution callers hold its database row lock."""
 	from .engine import ProcessEngine
 	from .task_registry import CreateLinkedDocTaskHandler
@@ -328,19 +330,33 @@ def resolve(doc, row):
 		unavailable()
 	version = _version(doc)
 	config = opted_config(doc, row, version=version) if version else None
+	engine = ProcessEngine.for_instance(doc)
+	if automatic:
+		from .task_registry import extract_task_config
+
+		step = engine.step_definition(doc, row)
+		config = extract_task_config(step) if step and step.automatisch else None
 	if (not config or version.prozess_typ != doc.prozess_typ or not (version.is_active or version.wurde_aktiviert)
 		or row.task_type != ACTION or (row.handler_key or ACTION) != ACTION
-		or type(ProcessEngine.for_instance(doc)._get_task_handler(row)) is not CreateLinkedDocTaskHandler):
+		or type(engine._get_task_handler(row)) is not CreateLinkedDocTaskHandler):
 		unavailable()
-	fields = _field_contract(config)
+	fields = _field_contract(config, automatic=automatic)
 	payload = _payload(doc)
 	output = config["store_in_payload_field"]
-	if row.status not in {"Offen", "In Arbeit"} or row.erfuellt or row.result_json or payload.get(output) not in (None, ""):
+	if row.status not in {"Offen", "In Arbeit"} or row.erfuellt or (not automatic and (row.result_json or payload.get(output) not in (None, ""))):
 		unavailable()
 	rows = {task.step_key: task for task in doc.aufgaben}
 	if len(rows) != len(doc.aufgaben):
 		unavailable()
-	input_keys, predecessors = _dependencies(version, rows, row.step_key)
+	if automatic:
+		if not engine._is_task_unlocked(doc, row):
+			unavailable()
+		input_keys = {port.target for port in version.schritt_io if port.step_key == row.step_key and port.kind == "payload_input"}
+		predecessors = {}
+	else:
+		if not engine._task_visible(doc, row) or not engine._task_condition(doc, row, "freigabe_wenn"):
+			unavailable()
+		input_keys, predecessors = _dependencies(version, rows, row.step_key)
 	specs = {spec.fieldname: spec for spec in version.payload_field_specs}
 	fixed = {}
 	for key, field in fields.items():

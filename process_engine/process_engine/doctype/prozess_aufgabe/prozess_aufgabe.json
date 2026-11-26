@@ -16,6 +16,18 @@
   "verantwortlich",
   "faellig_am",
   "status",
+  "ausfuehrungsstatus",
+  "ausfuehrungsfehler",
+  "ausfuehrung_am",
+  "ausfuehrung_faellig",
+  "ausfuehrung_ablauf",
+  "ausfuehrung_versuche",
+  "ausfuehrung_generation",
+  "ausfuehrung_key",
+  "ausfuehrung_actor",
+  "ausfuehrung_ungeklaert",
+  "ausfuehrung_token",
+  "ausfuehrung_input",
   "pflicht",
   "erfuellt",
   "erfuellt_am",
@@ -25,6 +37,90 @@
   "todo"
  ],
  "fields": [
+  {
+   "fieldname": "ausfuehrungsstatus",
+   "fieldtype": "Select",
+   "label": "Ausführungsstatus",
+   "read_only": 1,
+   "options": "\nWartet\nLäuft\nErledigt\nFehler",
+   "search_index": 1
+  },
+  {
+   "fieldname": "ausfuehrungsfehler",
+   "fieldtype": "Small Text",
+   "label": "Ausführungsfehler",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ausfuehrung_am",
+   "fieldtype": "Datetime",
+   "label": "Ausführungsstatus seit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ausfuehrung_faellig",
+   "fieldtype": "Datetime",
+   "label": "Nächster Versuch",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_ablauf",
+   "fieldtype": "Datetime",
+   "label": "Beansprucht bis",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_versuche",
+   "fieldtype": "Int",
+   "label": "Versuche",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_generation",
+   "fieldtype": "Int",
+   "label": "Ausführungsgeneration",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_key",
+   "fieldtype": "Data",
+   "label": "Ausführungsschlüssel",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_actor",
+   "fieldtype": "Link",
+   "label": "Ausgeführt für",
+   "read_only": 1,
+   "options": "User",
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_ungeklaert",
+   "fieldtype": "Check",
+   "label": "Ausgang ungeklärt",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_token",
+   "fieldtype": "Data",
+   "label": "Beanspruchung",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "ausfuehrung_input",
+   "fieldtype": "Long Text",
+   "label": "Ausführungseingabe",
+   "read_only": 1,
+   "hidden": 1
+  },
   {
    "fieldname": "aufgabe",
    "fieldtype": "Data",

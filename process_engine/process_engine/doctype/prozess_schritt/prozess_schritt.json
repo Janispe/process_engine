@@ -16,6 +16,7 @@
   "sichtbar_fuer_prozess_typ",
   "sichtbar_wenn",
   "freigabe_wenn",
+  "automatisch",
   "mapping_flag",
   "dokument_typ_tag",
   "print_format",
@@ -26,6 +27,12 @@
   "editor_y"
  ],
  "fields": [
+  {
+   "fieldname": "automatisch",
+   "fieldtype": "Check",
+   "label": "Automatisch",
+   "default": "0"
+  },
   {
    "fieldname": "reihenfolge",
    "fieldtype": "Int",

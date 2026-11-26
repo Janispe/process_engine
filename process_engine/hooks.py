@@ -62,3 +62,7 @@ doc_events = {
 	doctype: {"validate": _linked_create_version_guard, "on_trash": _linked_create_version_guard}
 	for doctype in ("Prozess Schritt", "Prozess Schritt IO", "Prozess Schritt Kante", "Prozess Field Spec")
 }
+
+scheduler_events = {
+	"cron": {"*/5 * * * *": ["process_engine.process_engine.processes.automatic.sweep"]},
+}

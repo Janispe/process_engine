@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import frappe
 
+from process_engine.process_engine.processes.conditions import validate_row
 from process_engine.process_engine.processes.linked_create import validate_opt_in
 from frappe import _
 from frappe.model.document import Document
@@ -211,6 +212,7 @@ class ProzessVersion(Document):
 					(s.get("task_type") or "").strip(),
 					(s.get("handler_key") or "").strip(),
 					int(s.get("pflicht") or 0),
+					int(s.get("automatisch") or 0),
 					(s.get("sichtbar_fuer_prozess_typ") or "").strip(),
 					(s.get("dokument_typ_tag") or "").strip(),
 					(s.get("print_format") or "").strip(),
@@ -497,7 +499,14 @@ class ProzessVersion(Document):
 			# die es nicht brauchen, ignorieren das Flag.
 			row.flags.version_payload_specs = self.get("payload_field_specs") or []
 			validate_opt_in(row, extract_task_config(row), complete=bool(self.is_active))
+			validate_row(row, "sichtbar_wenn", "freigabe_wenn")
 			handler.validate_config(row)
+			if row.automatisch:
+				from process_engine.process_engine.processes.automatic import validate_step
+
+				validate_step(row, handler)
+				if self.runtime_doctype != "Prozess Instanz":
+					frappe.throw(_("Automatische Schritte benötigen die Runtime Prozess Instanz."))
 
 		# Edge-Validierung (DAG-Kanten in schritt_kanten)
 		seen_edges: set[tuple[str, str]] = set()

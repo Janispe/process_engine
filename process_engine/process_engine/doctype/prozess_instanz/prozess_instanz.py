@@ -7,6 +7,7 @@ import frappe
 from frappe import _
 
 from process_engine.process_engine.processes import BaseProcessDocument, ProcessEngine
+from process_engine.process_engine.processes import automatic
 from process_engine.process_engine.processes.linked_create import protect_result
 from process_engine.process_engine.processes.instance_titles import build_instance_title
 
@@ -240,15 +241,47 @@ def _apply_action_gates(engine, doc, row, descriptor: dict, instance_lock_reason
 	(abgeschlossen/eingereicht) gilt fuer ALLE Actions, (3) `ignore_lock` ueberspringt nur
 	den Task-Vorgaenger-Lock (z.B. Wieder oeffnen), (4) Vorgaenger-Lock. ignore_lock darf den
 	Instanz-Lock NICHT umgehen — sonst liesse sich z.B. eine abgeschlossene Instanz reopen-en."""
+	if not engine._task_visible(doc, row):
+		return True, _("Aufgabe ist ausgeblendet.")
 	if descriptor.get("disabled"):
 		return True, (descriptor.get("reason") or _("Aktion ist derzeit nicht erlaubt."))
 	if instance_lock_reason:
 		return True, instance_lock_reason
 	if descriptor.get("ignore_lock"):
 		return False, ""
-	if bool(getattr(row, "pflicht", 0)) and not engine._is_task_unlocked(doc, row):
+	if (row.pflicht or automatic.enabled(engine, doc, row) or engine._has_release_condition(doc, row)) and not engine._is_task_unlocked(doc, row):
 		return True, _("Vorgaenger noch nicht freigegeben.")
 	return False, ""
+
+
+def _task_actions(engine, doc, row):
+	if not engine._task_visible(doc, row):
+		return []
+	if automatic.enabled(engine, doc, row):
+		return automatic.actions(row)
+	return engine._get_task_handler(row).runtime_actions(engine.config.task_handler_context, doc, row) or []
+
+
+@frappe.whitelist()
+def get_task_execution_view(docname: str) -> dict:
+	doc = frappe.get_doc("Prozess Instanz", docname)
+	doc.check_permission("read")
+	engine = ProcessEngine.for_instance(doc)
+	result = {}
+	for row in doc.aufgaben:
+		visible = engine._task_visible(doc, row)
+		result[row.name] = {
+			"visible": visible,
+			"unlocked": visible and engine._is_task_unlocked(doc, row),
+			"status": row.ausfuehrungsstatus,
+			"error": row.ausfuehrungsfehler,
+			"at": row.ausfuehrung_am,
+		}
+		if row.task_type == "email_draft" and row.ausfuehrungsstatus == automatic.DONE:
+			draft = json.loads(row.result_json or "{}").get("draft")
+			if draft and frappe.has_permission("Prozess E-Mail Entwurf", "read", doc=draft):
+				result[row.name]["draft"] = draft
+	return result
 
 
 @frappe.whitelist()
@@ -261,13 +294,12 @@ def get_task_runtime_actions(docname: str) -> dict:
 	doc = frappe.get_doc("Prozess Instanz", docname)
 	doc.check_permission("read")
 	engine = ProcessEngine.for_instance(doc)
-	ctx = engine.config.task_handler_context
 	instance_lock_reason = _instance_lock_reason(doc)
 
 	result: dict = {}
 	for row in doc.aufgaben or []:
 		try:
-			descriptors = engine._get_task_handler(row).runtime_actions(ctx, doc, row) or []
+			descriptors = _task_actions(engine, doc, row)
 		except Exception:
 			frappe.log_error(
 				title="runtime_actions fehlgeschlagen",
@@ -329,13 +361,12 @@ def run_task_action(docname: str, row_name: str, action_key: str, payload_json: 
 	doc = frappe.get_doc("Prozess Instanz", docname)
 	doc.check_permission("write")
 	engine = ProcessEngine.for_instance(doc)
-	ctx = engine.config.task_handler_context
 
 	row = next((r for r in (doc.aufgaben or []) if r.name == row_name), None)
 	if not row:
 		frappe.throw(_("Aufgabe '{0}' nicht gefunden.").format(row_name))
 
-	descriptors = engine._get_task_handler(row).runtime_actions(ctx, doc, row) or []
+	descriptors = _task_actions(engine, doc, row)
 	descriptor = next((d for d in descriptors if d.get("key") == action_key), None)
 	if descriptor is None:
 		frappe.throw(_("Unbekannte oder nicht erlaubte Aktion: {0}").format(action_key))
@@ -343,6 +374,9 @@ def run_task_action(docname: str, row_name: str, action_key: str, payload_json: 
 	disabled, reason = _apply_action_gates(engine, doc, row, descriptor, _instance_lock_reason(doc))
 	if disabled:
 		frappe.throw(reason)
+
+	if action_key == "retry_automatic":
+		return automatic.retry(doc.doctype, doc.name, row.name)
 
 	dispatch_action = (descriptor.get("_dispatch") or "").strip()
 	if not dispatch_action:
@@ -356,6 +390,8 @@ def run_task_action(docname: str, row_name: str, action_key: str, payload_json: 
 				params.update(extra)
 		except (ValueError, TypeError):
 			pass
+	if automatic.enabled(engine, doc, row):
+		params = {"status": "Offen"}
 	params["row_name"] = row_name
 	return engine.dispatch_workflow_action(docname, dispatch_action, payload_json=json.dumps(params))
 
