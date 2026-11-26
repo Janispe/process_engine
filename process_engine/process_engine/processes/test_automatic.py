@@ -149,6 +149,18 @@ class TestAutomaticProcessSteps(FrappeTestCase):
 			self.assertEqual(export.call_count, 2)
 			self.assertNotEqual(self.task().ausfuehrung_key, first_key)
 
+	def test_automatic_save_does_not_run_legacy_manual_exports(self):
+		instance = self.make_instance()
+		frappe.db.set_value(instance.doctype, instance.name, "status", "Abschlusspruefung")
+		frappe.db.commit()
+		with (
+			patch.object(PaperlessExportTaskHandler, "_request_export", return_value={"link": "https://paperless.example/documents/3"}),
+			patch.object(ProcessEngine, "trigger_paperless_export_for_files") as manual_exports,
+		):
+			self.run_export()
+			self.assertEqual(self.task().ausfuehrungsstatus, automatic.DONE)
+			manual_exports.assert_not_called()
+
 	def test_error_backoff_notification_and_manual_retry(self):
 		with (
 			patch.object(PaperlessExportTaskHandler, "_request_export", side_effect=ValueError("Testfehler")) as export,

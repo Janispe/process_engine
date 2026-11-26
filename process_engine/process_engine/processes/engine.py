@@ -403,6 +403,8 @@ class ProcessEngine:
 	def on_update(self, doc: Document) -> None:
 		self._ensure_todos_if_started(doc)
 		automatic.enqueue_ready(self, doc)
+		if doc.flags.automatic_execution:
+			return
 		if (doc.get(self.config.status_fieldname) or "").strip() in {
 			STATUS_ABSCHLUSSPRUEFUNG,
 			STATUS_ABGESCHLOSSEN,
